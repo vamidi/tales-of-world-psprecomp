@@ -3337,6 +3337,14 @@ void register_hle(psprecomp::Runtime &runtime, std::uint32_t user_arena_start) {
                 ctx.set_gpr(2, 1u);
                 return;
             }
+            const bool skip_by_env =
+                std::getenv("PSPRECOMP_TOW1_SKIP_MOVIE") != nullptr &&
+                g_scheduler.now_us >= 5000000u;
+            if (!g_mpeg_video_eof && (window_buttons() != 0u || skip_by_env) &&
+                g_mpeg_player->decoded_frames() > 0u) {
+                if (mpeg_diag()) std::cerr << "[tow1-mpeg] skip requested by pad\n";
+                g_mpeg_player->skip_to_end();
+            }
             int decoded_width = 0;
             int decoded_height = 0;
             const bool decoded = g_mpeg_player->decode_next(

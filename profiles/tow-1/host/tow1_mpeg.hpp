@@ -24,6 +24,8 @@ public:
     // Decodes the next video frame into tightly packed RGBA8 (alpha 255).
     // Returns false at end of stream or on decode failure.
     bool decode_next(std::vector<std::uint8_t> &rgba, int &width, int &height);
+    // Drop the rest of the stream; the next decode_next() reports EOF.
+    void skip_to_end();
 
     [[nodiscard]] std::uint64_t decoded_frames() const;
 

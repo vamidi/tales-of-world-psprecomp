@@ -32,6 +32,7 @@ struct MpegPlayer::Impl {
     int height = 0;
     AVPixelFormat source_format = AV_PIX_FMT_NONE;
     bool eof = false;
+    bool skip_requested = false;
     std::uint64_t frames = 0;
 
     void release() {
@@ -56,6 +57,7 @@ struct MpegPlayer::Impl {
         height = 0;
         source_format = AV_PIX_FMT_NONE;
         eof = false;
+        skip_requested = false;
         frames = 0;
     }
 
@@ -138,6 +140,7 @@ bool MpegPlayer::open(const std::string &path, std::string &error) {
         return false;
     }
     impl_->eof = false;
+    impl_->skip_requested = false;
     return true;
 }
 
@@ -153,8 +156,12 @@ std::uint64_t MpegPlayer::decoded_frames() const {
     return impl_ != nullptr ? impl_->frames : 0u;
 }
 
+void MpegPlayer::skip_to_end() {
+    if (impl_ != nullptr) impl_->skip_requested = true;
+}
+
 bool MpegPlayer::decode_next(std::vector<std::uint8_t> &rgba, int &width, int &height) {
-    if (!is_open()) return false;
+    if (!is_open() || impl_->skip_requested) return false;
 
     bool have_packet = false;
     while (true) {

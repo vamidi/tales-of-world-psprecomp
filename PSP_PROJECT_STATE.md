@@ -67,6 +67,7 @@
 - PPSSPP’s equivalent targets are `0x08FD4EC0` / `0x08FF4D00`; the `0x900` difference is heap layout. Host-side PPT upload diagnostics are no longer required for the title frame.
 - **Movie pacing:** `sceMpegAvcDecode` now advances at most one video frame per `33,366 us` of **wall-clock** time (29.97 fps), and the window presenter is paced at 60 Hz. Previously it decoded the next H.264 frame on every display call while the host ran unthrottled, making the opening movie play at roughly 2x. `PSPRECOMP_TOW1_MPEG_UNPACED=1` disables decode pacing; `PSPRECOMP_TOW1_VSYNC=0` disables presenter pacing.
 - **Title menu verified.** `sceKernelDeleteThread` now honors UID 7 (`soundThread`) instead of deleting the current thread. After the movie cleanup, Start opens the title menu; a bounded run captures **NEW GAME / CONTINUE / OPTIONS** at frame 5000. The next work is menu input and the first gameplay scene.
+- **Movie skip:** any pad button during `sceMpegAvcDecode` drops the remaining stream and reports EOF, matching the real game’s skip-on-input behavior. `PSPRECOMP_TOW1_SKIP_MOVIE=1` auto-skips after 5 s for testing.
 - `libfont.prx` in the extracted game tree starts with `~SCE`, i.e. it is **encrypted**. Native `sceKernelLoadModule`/`sceKernelStartModule` still fake the module UID; the game currently accepts that enough to proceed, but real libfont code is not executed.
 
 ## Verified fixes in this session

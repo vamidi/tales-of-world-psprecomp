@@ -120,6 +120,9 @@ Startup is now past the module gate. The key was the savedata dialog state:
   OPTIONS** menu at frame 5000.
   - `PSPRECOMP_TOW1_FRAME_DUMP_AT=5000` captures the menu.
   - `PSPRECOMP_TOW1_EXIT_AFTER_FRAME_DUMP=1` stops after that capture.
+- **Movie skip:** any controller button while `sceMpegAvcDecode` is running drops
+  the remaining video stream and reports EOF, matching the game's skip-on-input
+  behavior. `PSPRECOMP_TOW1_SKIP_MOVIE=1` auto-skips after 5 s for testing.
 
 `libfont.prx` in `game/root/PSP_GAME/USRDIR/module/` starts with `~SCE`, so it
 is encrypted and cannot be passed directly to `psp_analyze`/`psp_recomp`.
