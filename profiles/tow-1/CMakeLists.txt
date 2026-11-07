@@ -62,6 +62,8 @@ endif()
 target_include_directories(Tow1Native PRIVATE "${FFMPEG_INCLUDE_DIR}")
 target_link_libraries(Tow1Native PRIVATE
     psprecomp_core
+    $<$<PLATFORM_ID:Windows>:gdi32>
+    $<$<PLATFORM_ID:Windows>:user32>
     "${FFMPEG_AVFORMAT_LIBRARY}"
     "${FFMPEG_AVCODEC_LIBRARY}"
     "${FFMPEG_AVUTIL_LIBRARY}"

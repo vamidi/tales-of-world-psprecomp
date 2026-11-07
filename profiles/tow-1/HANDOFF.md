@@ -123,6 +123,19 @@ Startup is now past the module gate. The key was the savedata dialog state:
 - **Movie skip:** any controller button while `sceMpegAvcDecode` is running drops
   the remaining video stream and reports EOF, matching the game's skip-on-input
   behavior. `PSPRECOMP_TOW1_SKIP_MOVIE=1` auto-skips after 5 s for testing.
+- **Font HLE verified.** The new-game notice/dialogue text renders at frame
+  10000. `sceFontGetCharGlyphImage` now rasterizes the requested character with
+  a host Windows font and draws it directly into the caller's image buffer,
+  preserving the 26.6 `xPos64`/`yPos64`, buffer dimensions, pitch, and pixel
+  format. Both the game's L4 (4bpp) and 8bpp paths are implemented with the PSP
+  additive/saturating blend. `sceFontGetCharInfo` now returns 26.6 metrics
+  (advance, ascender, descender, bearings) instead of the old 8x8 placeholder.
+  - `PSPRECOMP_TOW1_LIBFONT_DIAG=1` logs font open, metrics, and glyph calls.
+  - The host fallback is Segoe UI/Arial. Japanese glyphs still need a CJK host
+    fallback or a real PGF.
+
+
+The old `libfont.prx` note:
 
 `libfont.prx` in `game/root/PSP_GAME/USRDIR/module/` starts with `~SCE`, so it
 is encrypted and cannot be passed directly to `psp_analyze`/`psp_recomp`.
@@ -141,8 +154,8 @@ proceed.
    - `PSPRECOMP_GE_DIAG=1`
    - `PSPRECOMP_TOW1_FRAME_DIAG=1`
    - `PSPRECOMP_TOW1_FRAME_DUMP=...`
-5. Real `libfont.prx` remains optional until font rendering needs it; obtain a
-   decrypted dump from PPSSPP if needed.
+5. The host font fallback covers Latin text. A real PGF (or a CJK host font)
+   is still needed for Japanese glyphs; `libfont.prx` remains encrypted.
 6. If timer preemption is needed later, re-enable it with
    `PSPRECOMP_TOW1_TIMESLICE=20000` and verify the module queue does not get
    preempted between `0x08806100` and `0x08B17F8C`.
