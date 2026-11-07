@@ -66,7 +66,7 @@
 - Title assets are loaded (`title.arc`, BNG and logo480 PPTs). The active title sublist is `0x084A0000`; textured PRIM `0x084A0238` uses `format=5` CLUT8, `texaddr=0x08FD45C0`, `clut=0x08FF4400`, `texsize=512x512`, buffer width 480.
 - PPSSPP’s equivalent targets are `0x08FD4EC0` / `0x08FF4D00`; the `0x900` difference is heap layout. Host-side PPT upload diagnostics are no longer required for the title frame.
 - **Movie pacing:** `sceMpegAvcDecode` now advances at most one video frame per `33,366 us` of **wall-clock** time (29.97 fps), and the window presenter is paced at 60 Hz. Previously it decoded the next H.264 frame on every display call while the host ran unthrottled, making the opening movie play at roughly 2x. `PSPRECOMP_TOW1_MPEG_UNPACED=1` disables decode pacing; `PSPRECOMP_TOW1_VSYNC=0` disables presenter pacing.
-- The next work is input/menu transition and the first gameplay scene.
+- **Title menu verified.** `sceKernelDeleteThread` now honors UID 7 (`soundThread`) instead of deleting the current thread. After the movie cleanup, Start opens the title menu; a bounded run captures **NEW GAME / CONTINUE / OPTIONS** at frame 5000. The next work is menu input and the first gameplay scene.
 - `libfont.prx` in the extracted game tree starts with `~SCE`, i.e. it is **encrypted**. Native `sceKernelLoadModule`/`sceKernelStartModule` still fake the module UID; the game currently accepts that enough to proceed, but real libfont code is not executed.
 
 ## Verified fixes in this session
@@ -478,3 +478,30 @@ The silent SAS completion signal is currently gated on `g_mpeg_video_eof`;
 after movie cleanup that flag is reset, so title sound effects may never
 publish `cSoundEffect` completion. Test signaling `cSoundEffect` 0x15
 unconditionally after a grain, or identify the post-movie title requester.
+
+### tow-2 post-movie title blocker (2026-11-07)
+
+- Made the silent SAS `cSoundEffect` 0x15 publication unconditional after a
+  grain. Result: `cSoundEffect` now reaches `completed`.
+- 600M/700M stop:
+
+```text
+Runtime stopped: dispatch limit at 0x08A59638
+uid=1 user_main     sleeping at 0x08A70420
+uid=4 FileReadingTask running at 0x08A59768
+uid=7 cSoundEffect  completed
+cOnMediaStream pattern=0
+```
+
+- No `title.arc`.
+- PPSSPP at the movie end has the same task state:
+  `[0x08D0317C] = 0x040CC000`, `[0x08D03198] = 0`.
+- The early task path is `0x08804A64`; the title state is `0x08A4B118`, and
+  the title-thread creator is `0x08A4B168` (`sceKernelCreateThread` via
+  `0x08AA94F0`). Callers of `0x08A4B168` include `0x088138D8`,
+  `0x08813ED0`, `0x08813F98`, and `0x0898BF48`. These are not reached in
+  the native run.
+- Next test: trace/count the title callers and identify the missing module/
+  task request that should create the title thread and open `title.arc`.
+  PPSSPP breakpoints on `sceIoOpen`/file-helper destabilize the debugger
+  socket, so use the stable movie/task breakpoints or static trace.

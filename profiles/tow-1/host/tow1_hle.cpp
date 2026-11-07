@@ -797,6 +797,42 @@ bool activate_next_thread(psprecomp::AllegrexContext &ctx, const char *reason) {
     return true;
 }
 
+void complete_current_thread(psprecomp::Runtime &runtime, psprecomp::AllegrexContext &ctx);
+
+void delete_thread(psprecomp::Runtime &runtime, psprecomp::AllegrexContext &ctx) {
+    std::int32_t uid = static_cast<std::int32_t>(ctx.gpr[4]);
+    if (uid == 0) uid = g_scheduler.current_uid;
+    if (uid == g_scheduler.current_uid) {
+        complete_current_thread(runtime, ctx);
+        return;
+    }
+    const auto thread = g_scheduler.threads.find(uid);
+    if (thread == g_scheduler.threads.end()) {
+        ctx.set_gpr(2, 0x80020198u);
+        return;
+    }
+    const std::string name = thread->second.name;
+    thread->second.state = ThreadState::Completed;
+    g_scheduler.ready.erase(
+        std::remove_if(g_scheduler.ready.begin(), g_scheduler.ready.end(),
+                       [uid](const ReadyEntry &entry) { return entry.uid == uid; }),
+        g_scheduler.ready.end());
+    if (const auto waiters = g_scheduler.end_waiters.find(uid);
+        waiters != g_scheduler.end_waiters.end()) {
+        for (ThreadWaiter &waiter : waiters->second) {
+            waiter.context.set_gpr(2, 0u);
+            enqueue_thread(waiter.uid, waiter.context);
+        }
+        g_scheduler.end_waiters.erase(waiters);
+    }
+    g_scheduler.threads.erase(uid);
+    if (std::getenv("PSPRECOMP_TOW1_EXIT_DIAG") != nullptr) {
+        std::cerr << "[tow1-exit] deleted non-current thread uid=" << uid
+                  << " name=\"" << name << "\"\n";
+    }
+    ctx.set_gpr(2, 0u);
+}
+
 void complete_current_thread(psprecomp::Runtime &runtime, psprecomp::AllegrexContext &ctx) {
     const std::int32_t completed_uid = g_scheduler.current_uid;
     std::uint32_t exit_status = 0u;
@@ -2824,9 +2860,52 @@ void register_hle(psprecomp::Runtime &runtime, std::uint32_t user_arena_start) {
             }
             std::uint32_t buttons = window_buttons();
             if (std::getenv("PSPRECOMP_TOW1_PRESS_START") != nullptr) {
-                // Press Start+Cross for 250 ms every 2 s of guest time.
-                if ((g_scheduler.now_us % 2000000u) < 250000u) {
-                    buttons |= 0x4008u;
+                // Do not inject input during the opening movie.  The title
+                // pointer becomes non-zero when the title state is active.
+                const bool title_active = rt.memory().load32(0x08DB61D0u) != 0u;
+                const bool start_only =
+                    std::getenv("PSPRECOMP_TOW1_PRESS_START_ONLY") != nullptr;
+                const bool title_ready =
+                    g_scheduler.now_us >= 95000000u; // after the opening movie
+                if (start_only) {
+                    static bool start_seen = false;
+                    static std::uint64_t start_seen_us = 0u;
+                    if (title_ready && !start_seen) {
+                        start_seen = true;
+                        start_seen_us = g_scheduler.now_us;
+                    }
+                    if (start_seen) {
+                        const std::uint64_t elapsed = g_scheduler.now_us - start_seen_us;
+                        if (elapsed < 250000u ||
+                            (elapsed >= 10000000u && elapsed < 10250000u))
+                            buttons |= 0x0008u;
+                        if (const char *menu = std::getenv("PSPRECOMP_TOW1_MENU_BUTTON");
+                            menu != nullptr && elapsed >= 13000000u && elapsed < 13250000u)
+                            buttons |= static_cast<std::uint32_t>(
+                                std::strtoul(menu, nullptr, 0));
+                    }
+                } else {
+                    static bool sequence_armed = false;
+                    static std::uint64_t title_seen_us = 0u;
+                    static bool cross_sent = false;
+                    if (title_ready && !sequence_armed) {
+                        sequence_armed = true;
+                        title_seen_us = g_scheduler.now_us;
+                    }
+                    if (sequence_armed && !cross_sent) {
+                        const std::uint64_t elapsed = g_scheduler.now_us - title_seen_us;
+                        if (elapsed >= 1000000u && elapsed < 1250000u)
+                            buttons |= 0x4000u; // Cross: leave the title/intro
+                        if (elapsed >= 1250000u) cross_sent = true;
+                    }
+                    if (sequence_armed && cross_sent) {
+                        const std::uint64_t elapsed = g_scheduler.now_us - title_seen_us;
+                        if (const char *menu = std::getenv("PSPRECOMP_TOW1_MENU_BUTTON");
+                            menu != nullptr && elapsed >= 30000000u && elapsed < 180000000u &&
+                            (elapsed % 5000000u) < 250000u)
+                            buttons |= static_cast<std::uint32_t>(
+                                std::strtoul(menu, nullptr, 0));
+                    }
                 }
             }
             for (std::uint32_t index = 0; index < count; ++index) {
@@ -3605,7 +3684,12 @@ void register_hle(psprecomp::Runtime &runtime, std::uint32_t user_arena_start) {
             ctx.set_gpr(2, 0u);
         });
     runtime.register_hle("LoadExecForUser", 0x05572A5Fu, // sceKernelExitGame
-        [](psprecomp::Runtime &rt, psprecomp::AllegrexContext &) {
+        [](psprecomp::Runtime &rt, psprecomp::AllegrexContext &ctx) {
+            if (std::getenv("PSPRECOMP_TOW1_EXIT_DIAG") != nullptr) {
+                std::cerr << "[tow1-exit] ExitGame uid=" << g_scheduler.current_uid
+                          << " pc=" << psprecomp::hex32(ctx.pc)
+                          << " ra=" << psprecomp::hex32(ctx.gpr[31]) << "\n";
+            }
             rt.stop("sceKernelExitGame");
         });
 
@@ -3892,9 +3976,14 @@ void register_hle(psprecomp::Runtime &runtime, std::uint32_t user_arena_start) {
         });
     runtime.register_hle("ThreadManForUser", 0x9FA03CD3u, // sceKernelDeleteThread
         [](psprecomp::Runtime &rt, psprecomp::AllegrexContext &ctx) {
-            // Current-thread approximation; the game does not import a
-            // standalone delete of another thread at this stage.
-            complete_current_thread(rt, ctx);
+            if (std::getenv("PSPRECOMP_TOW1_EXIT_DIAG") != nullptr) {
+                std::cerr << "[tow1-exit] DeleteThread uid=" << g_scheduler.current_uid
+                          << " pc=" << psprecomp::hex32(ctx.pc)
+                          << " ra=" << psprecomp::hex32(ctx.gpr[31])
+                          << " a0=" << psprecomp::hex32(ctx.gpr[4])
+                          << " now=" << g_scheduler.now_us << "\n";
+            }
+            delete_thread(rt, ctx);
         });
     runtime.register_hle("ThreadManForUser", 0x293B45B8u, // sceKernelGetThreadId
         [](psprecomp::Runtime &, psprecomp::AllegrexContext &ctx) {

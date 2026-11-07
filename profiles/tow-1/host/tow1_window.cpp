@@ -279,6 +279,8 @@ void window_present(const psprecomp::GuestMemory &memory, std::uint32_t address,
                     out.write(rgb, 3);
                 }
             }
+            if (std::getenv("PSPRECOMP_TOW1_EXIT_AFTER_FRAME_DUMP") != nullptr)
+                std::exit(0);
         }
         ++dump_count;
     }

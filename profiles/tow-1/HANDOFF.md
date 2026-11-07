@@ -111,6 +111,15 @@ Startup is now past the module gate. The key was the savedata dialog state:
   display call while the host ran unthrottled, making the opening movie play at
   roughly 2x. `PSPRECOMP_TOW1_MPEG_UNPACED=1` disables decode pacing;
   `PSPRECOMP_TOW1_VSYNC=0` disables presenter pacing.
+- **Title menu verified.** `sceKernelDeleteThread` now honors its UID instead
+  of always completing the current thread. UID 7 is the movie `soundThread`;
+  the old approximation killed `user_main` and prevented the menu. After the
+  fix, `PSPRECOMP_TOW1_PRESS_START=1` plus
+  `PSPRECOMP_TOW1_PRESS_START_ONLY=1` presses Start once as the title settles
+  and again 10 s later. A bounded 300M run reaches the **NEW GAME / CONTINUE /
+  OPTIONS** menu at frame 5000.
+  - `PSPRECOMP_TOW1_FRAME_DUMP_AT=5000` captures the menu.
+  - `PSPRECOMP_TOW1_EXIT_AFTER_FRAME_DUMP=1` stops after that capture.
 
 `libfont.prx` in `game/root/PSP_GAME/USRDIR/module/` starts with `~SCE`, so it
 is encrypted and cannot be passed directly to `psp_analyze`/`psp_recomp`.
