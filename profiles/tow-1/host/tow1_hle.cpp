@@ -400,6 +400,9 @@ std::uint32_t g_last_archive_open_path = 0u;
 std::uint32_t g_ge_diag_lists = 0u;
 std::uint32_t g_ge_diag_prim_lists = 0u;
 std::uint32_t g_last_ppt_object = 0u;
+std::uint64_t g_avc_decode_calls = 0u;
+std::uint64_t g_vblank_wait_generation = 0u;
+std::uint64_t g_vblank_tick_generation = 0u;
 
 bool ge_diag() {
     static const bool enabled = std::getenv("PSPRECOMP_GE_DIAG") != nullptr;
@@ -2332,6 +2335,13 @@ void report_threads() {
     }
 }
 
+void display_wait_tick() {
+    if (std::getenv("PSPRECOMP_TOW1_NO_WAIT_TIME") == nullptr) {
+        g_scheduler.now_us += 16683u;
+        ++g_vblank_wait_generation;
+    }
+}
+
 void register_hle(psprecomp::Runtime &runtime, std::uint32_t user_arena_start) {
     g_partitions = PartitionTable{};
     g_partitions.next_address = (user_arena_start + 0xFFu) & ~0xFFu;
@@ -3211,6 +3221,17 @@ void register_hle(psprecomp::Runtime &runtime, std::uint32_t user_arena_start) {
         });
     runtime.register_hle("sceMpeg", 0x0E3C2E9Du, // sceMpegAvcDecode
         [](psprecomp::Runtime &rt, psprecomp::AllegrexContext &ctx) {
+            ++g_avc_decode_calls;
+            if (std::getenv("PSPRECOMP_TOW1_MPEG_UNPACED") == nullptr) {
+                static std::uint64_t next_video_us = 0u;
+                if (next_video_us != 0u && g_scheduler.now_us < next_video_us) {
+                    if (ctx.gpr[8] != 0u && rt.memory().contains(ctx.gpr[8], 4u))
+                        rt.memory().store32(ctx.gpr[8], 1u);
+                    ctx.set_gpr(2, 0u);
+                    return;
+                }
+                next_video_us = g_scheduler.now_us + 33366u;
+            }
             const std::uint32_t init = ctx.gpr[8];
             const std::uint32_t buffer_ptr = ctx.gpr[7];
             if (mpeg_diag()) {
@@ -3374,21 +3395,32 @@ void register_hle(psprecomp::Runtime &runtime, std::uint32_t user_arena_start) {
                           << " sync=" << psprecomp::hex32(ctx.gpr[7]) << "\n";
             }
             ge_set_framebuffer(rt, g_framebuffer, g_framebuffer_stride, g_framebuffer_format);
+            if (std::getenv("PSPRECOMP_TOW1_VBLANK_DIAG") != nullptr) {
+                static std::uint64_t frames = 0u;
+                static std::uint64_t last_avc = 0u;
+                if (frames < 80u || (frames % 1000u) == 0u)
+                    std::cerr << "[tow1-vblank] frame=" << frames
+                              << " now_us=" << g_scheduler.now_us
+                              << " vcount=" << (g_scheduler.now_us / 16683u)
+                              << " avc_delta=" << (g_avc_decode_calls - last_avc) << "\n";
+                last_avc = g_avc_decode_calls;
+                ++frames;
+            }
             ctx.set_gpr(2, 0u);
         });
     runtime.register_hle("sceDisplay", 0x36CDFADEu, // sceDisplayWaitVblankStart
         [](psprecomp::Runtime &, psprecomp::AllegrexContext &ctx) {
-            g_scheduler.now_us += 16683u;
+            display_wait_tick();
             ctx.set_gpr(2, 0u);
         });
     runtime.register_hle("sceDisplay", 0x46F186C3u, // sceDisplayWaitVblankStartCB
         [](psprecomp::Runtime &, psprecomp::AllegrexContext &ctx) {
-            g_scheduler.now_us += 16683u;
+            display_wait_tick();
             ctx.set_gpr(2, 0u);
         });
     runtime.register_hle("sceDisplay", 0x8EB9EC49u, // sceDisplayWaitVblankCB
         [](psprecomp::Runtime &rt, psprecomp::AllegrexContext &ctx) {
-            g_scheduler.now_us += 16683u;
+            display_wait_tick();
             if (std::getenv("PSPRECOMP_TOW1_WAIT_DIAG") != nullptr) {
                 static std::uint32_t logged = 0u;
                 if (logged < 12u) {
@@ -3408,7 +3440,7 @@ void register_hle(psprecomp::Runtime &runtime, std::uint32_t user_arena_start) {
         });
     runtime.register_hle("sceDisplay", 0x984C27E7u, // sceDisplayWaitVblank
         [](psprecomp::Runtime &, psprecomp::AllegrexContext &ctx) {
-            g_scheduler.now_us += 16683u;
+            display_wait_tick();
             ctx.set_gpr(2, 0u);
         });
     runtime.register_hle("sceDisplay", 0x9C6EAAD7u, // sceDisplayGetVcount
@@ -3422,9 +3454,14 @@ void register_hle(psprecomp::Runtime &runtime, std::uint32_t user_arena_start) {
                 static std::uint64_t calls = 0u;
                 if (++calls >= interval) {
                     calls = 0u;
-                    g_scheduler.now_us += 16683u;
-                    g_next_vblank_us = g_scheduler.now_us + 16683u;
-                    signal_sleep_semaphore_for_vblank();
+                    if (g_vblank_wait_generation != g_vblank_tick_generation) {
+                        // A real vblank wait already produced this frame's time.
+                        g_vblank_tick_generation = g_vblank_wait_generation;
+                    } else {
+                        g_scheduler.now_us += 16683u;
+                        g_next_vblank_us = g_scheduler.now_us + 16683u;
+                        signal_sleep_semaphore_for_vblank();
+                    }
                 }
             }
             if (std::getenv("PSPRECOMP_TOW1_WAIT_DIAG") != nullptr) {
