@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstdint>
 #include <deque>
 #include <filesystem>
@@ -2297,6 +2298,9 @@ const char *thread_state_name(ThreadState state) {
 } // namespace
 
 void report_threads() {
+    if (g_mpeg_player)
+        std::cerr << "[tow1] mpeg decoded_frames=" << g_mpeg_player->decoded_frames()
+                  << " avc_calls=" << g_avc_decode_calls << "\n";
     std::cerr << "[tow1] thread states:\n";
     for (const auto &[uid, thread] : g_scheduler.threads) {
         std::cerr << "  uid=" << uid << " name=\"" << thread.name
@@ -3223,14 +3227,16 @@ void register_hle(psprecomp::Runtime &runtime, std::uint32_t user_arena_start) {
         [](psprecomp::Runtime &rt, psprecomp::AllegrexContext &ctx) {
             ++g_avc_decode_calls;
             if (std::getenv("PSPRECOMP_TOW1_MPEG_UNPACED") == nullptr) {
-                static std::uint64_t next_video_us = 0u;
-                if (next_video_us != 0u && g_scheduler.now_us < next_video_us) {
+                using video_clock = std::chrono::steady_clock;
+                static video_clock::time_point next_video = video_clock::now();
+                const video_clock::time_point now = video_clock::now();
+                if (now < next_video) {
                     if (ctx.gpr[8] != 0u && rt.memory().contains(ctx.gpr[8], 4u))
                         rt.memory().store32(ctx.gpr[8], 1u);
                     ctx.set_gpr(2, 0u);
                     return;
                 }
-                next_video_us = g_scheduler.now_us + 33366u;
+                next_video = now + std::chrono::microseconds(33366);
             }
             const std::uint32_t init = ctx.gpr[8];
             const std::uint32_t buffer_ptr = ctx.gpr[7];

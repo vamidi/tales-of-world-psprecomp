@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <cstdlib>
 #include <cstring>
@@ -283,6 +284,16 @@ void window_present(const psprecomp::GuestMemory &memory, std::uint32_t address,
     }
 
     if (!g_enabled.load()) return;
+    if (std::getenv("PSPRECOMP_TOW1_VSYNC") == nullptr ||
+        std::strcmp(std::getenv("PSPRECOMP_TOW1_VSYNC"), "0") != 0) {
+        using clock = std::chrono::steady_clock;
+        static clock::time_point next_present = clock::now();
+        constexpr auto frame_time = std::chrono::microseconds(16683);
+        const clock::time_point now = clock::now();
+        if (now < next_present) std::this_thread::sleep_until(next_present);
+        next_present += frame_time;
+        if (next_present < now) next_present = now + frame_time;
+    }
     {
         std::lock_guard lock(g_mutex);
         g_frame = std::move(frame);

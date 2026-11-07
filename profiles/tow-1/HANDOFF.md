@@ -106,9 +106,11 @@ Startup is now past the module gate. The key was the savedata dialog state:
   frame renders without host-side PPT upload. The `PPT_*` diagnostics remain,
   but are not the title fix; the scheduler/vblank tick was the missing piece.
 - **Movie pacing:** `sceMpegAvcDecode` now advances at most one video frame per
-  `33,366 us` of guest time (29.97 fps). The guest was previously decoding the
-  next H.264 frame on every display call, which made the opening movie play at
-  roughly 2x. Set `PSPRECOMP_TOW1_MPEG_UNPACED=1` for the old behavior.
+  `33,366 us` of **wall-clock** time (29.97 fps), and the window presenter is
+  paced at 60 Hz. Previously the guest decoded the next H.264 frame on every
+  display call while the host ran unthrottled, making the opening movie play at
+  roughly 2x. `PSPRECOMP_TOW1_MPEG_UNPACED=1` disables decode pacing;
+  `PSPRECOMP_TOW1_VSYNC=0` disables presenter pacing.
 
 `libfont.prx` in `game/root/PSP_GAME/USRDIR/module/` starts with `~SCE`, so it
 is encrypted and cannot be passed directly to `psp_analyze`/`psp_recomp`.
