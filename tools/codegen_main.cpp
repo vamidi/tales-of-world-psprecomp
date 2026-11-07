@@ -9,6 +9,7 @@
 #include <bit>
 #include <cctype>
 #include <charconv>
+#include <cstdlib>
 #include <filesystem>
 #include <cmath>
 #include <limits>
@@ -35,6 +36,21 @@ std::uint32_t parse_hex(std::string text) {
     const auto result = std::from_chars(text.data(), text.data() + text.size(), value, 16);
     if (result.ec != std::errc{}) throw psprecomp::Error("Invalid hex value: " + text);
     return value;
+}
+
+std::vector<std::uint32_t> extra_seeds_from_env() {
+    std::vector<std::uint32_t> seeds;
+    const char *text = std::getenv("PSPRECOMP_EXTRA_FUNCTIONS");
+    if (text == nullptr || *text == '\0') return seeds;
+    std::string_view remaining(text);
+    while (!remaining.empty()) {
+        const std::size_t comma = remaining.find(',');
+        const std::string_view item = remaining.substr(0, comma);
+        if (!item.empty()) seeds.push_back(parse_hex(std::string(item)));
+        if (comma == std::string_view::npos) break;
+        remaining.remove_prefix(comma + 1u);
+    }
+    return seeds;
 }
 
 std::vector<Function> load_functions(const std::filesystem::path &path) {
@@ -202,6 +218,32 @@ std::string emit_regular(const psprecomp::DecodedInstruction &d, std::uint32_t p
     case psprecomp::OpcodeKind::Multu:
         out << "    { const std::uint64_t product = static_cast<std::uint64_t>(" << reg(d.rs) << ") * static_cast<std::uint64_t>(" << reg(d.rt) << "); "
             << "ctx.lo = static_cast<std::uint32_t>(product); ctx.hi = static_cast<std::uint32_t>(product >> 32u); }\n";
+        break;
+    case psprecomp::OpcodeKind::Madd:
+        out << "    { const std::uint64_t accumulator = (static_cast<std::uint64_t>(ctx.hi) << 32u) | ctx.lo; "
+            << "const std::uint64_t product = static_cast<std::uint64_t>(static_cast<std::int64_t>(static_cast<std::int32_t>(" << reg(d.rs) << ")) * "
+            << "static_cast<std::int64_t>(static_cast<std::int32_t>(" << reg(d.rt) << "))); "
+            << "const std::uint64_t result = accumulator + product; "
+            << "ctx.lo = static_cast<std::uint32_t>(result); ctx.hi = static_cast<std::uint32_t>(result >> 32u); }\n";
+        break;
+    case psprecomp::OpcodeKind::Maddu:
+        out << "    { const std::uint64_t accumulator = (static_cast<std::uint64_t>(ctx.hi) << 32u) | ctx.lo; "
+            << "const std::uint64_t product = static_cast<std::uint64_t>(" << reg(d.rs) << ") * static_cast<std::uint64_t>(" << reg(d.rt) << "); "
+            << "const std::uint64_t result = accumulator + product; "
+            << "ctx.lo = static_cast<std::uint32_t>(result); ctx.hi = static_cast<std::uint32_t>(result >> 32u); }\n";
+        break;
+    case psprecomp::OpcodeKind::Msub:
+        out << "    { const std::uint64_t accumulator = (static_cast<std::uint64_t>(ctx.hi) << 32u) | ctx.lo; "
+            << "const std::uint64_t product = static_cast<std::uint64_t>(static_cast<std::int64_t>(static_cast<std::int32_t>(" << reg(d.rs) << ")) * "
+            << "static_cast<std::int64_t>(static_cast<std::int32_t>(" << reg(d.rt) << "))); "
+            << "const std::uint64_t result = accumulator - product; "
+            << "ctx.lo = static_cast<std::uint32_t>(result); ctx.hi = static_cast<std::uint32_t>(result >> 32u); }\n";
+        break;
+    case psprecomp::OpcodeKind::Msubu:
+        out << "    { const std::uint64_t accumulator = (static_cast<std::uint64_t>(ctx.hi) << 32u) | ctx.lo; "
+            << "const std::uint64_t product = static_cast<std::uint64_t>(" << reg(d.rs) << ") * static_cast<std::uint64_t>(" << reg(d.rt) << "); "
+            << "const std::uint64_t result = accumulator - product; "
+            << "ctx.lo = static_cast<std::uint32_t>(result); ctx.hi = static_cast<std::uint32_t>(result >> 32u); }\n";
         break;
     case psprecomp::OpcodeKind::Div:
         // $zero is emitted as a literal 0u.  If it is also the divisor, do not
@@ -876,7 +918,15 @@ void emit_target(std::ostringstream &body, std::uint32_t target,
     // chain table and indexes the tiny unit table instead. A bucket containing
     // an import/HLE/host replacement is marked overridden at registration time
     // and invoke_chained_unit() falls back to the exact per-PC lookup there.
-    if (unit_span_bytes != 0u && target >= executable_base) {
+    //
+    // Only chain when the target is a registered entry of a generated unit.
+    // A fixed target can also be unseeded code, data, or an address outside the
+    // emitted corpus; inventing a unit reference for it emits a declaration
+    // that does not exist (and the target unit could not dispatch to it anyway).
+    const bool known_direct_entry = direct_entry_ids != nullptr &&
+        direct_entry_ids->find(target) != direct_entry_ids->end() &&
+        direct_entry_ids->at(target) != 0u;
+    if (unit_span_bytes != 0u && target >= executable_base && known_direct_entry) {
         const std::uint32_t unit = (target - executable_base) / unit_span_bytes;
         body << indent << "(void)" << direct_unit_chain_expression(unit, target, direct_entry_ids)
              << "; return;\n";
@@ -1056,26 +1106,35 @@ std::string emit_function_source(const GeneratedFunctionInput &function,
                         if (target_is_import) {
                             body << "    ctx.pc = " << psprecomp::hex32(target) << "u;\n"
                                  << "    return;\n";
-                            continue;
+                            // The handoff is a terminal transfer: the block ends
+                            // here. `continue` would re-enter the enclosing while
+                            // with the same pc and re-emit this JAL forever.
+                            break;
                         }
                         // Otherwise run the callee inline and resume locally only
-                        // if it came back to our return address.
-                        const bool direct_unit = function.unit_span_bytes != 0u &&
-                            target >= function.executable_base;
-                        const std::uint32_t target_unit = direct_unit
+                        // if it came back to our return address. A direct chain is
+                        // only valid when the target is a registered entry of a
+                        // generated unit; otherwise the exact dispatcher must see
+                        // ctx.pc so it can resolve or report the address.
+                        const bool direct_target = function.unit_span_bytes != 0u &&
+                            target >= function.executable_base &&
+                            function.direct_entry_ids != nullptr &&
+                            function.direct_entry_ids->find(target) != function.direct_entry_ids->end() &&
+                            function.direct_entry_ids->at(target) != 0u;
+                        const std::uint32_t target_unit = direct_target
                             ? (target - function.executable_base) / function.unit_span_bytes : 0u;
-                        if (!direct_unit)
+                        if (!direct_target)
                             body << "    ctx.pc = " << psprecomp::hex32(target) << "u;\n";
                         if (function.entry_labels.contains(return_pc)) {
                             body << "    if (";
-                            if (direct_unit)
+                            if (direct_target)
                                 body << direct_unit_chain_expression(target_unit, target, function.direct_entry_ids);
                             else
                                 body << "rt.invoke_chained_call(ctx, &aot_mem)";
                             body << " && ctx.pc == " << psprecomp::hex32(return_pc)
                                  << "u) goto L_" << psprecomp::hex32(return_pc).substr(2) << ";\n";
                         } else {
-                            if (direct_unit)
+                            if (direct_target)
                                 body << "    (void)" << direct_unit_chain_expression(target_unit, target, function.direct_entry_ids) << ";\n";
                             else
                                 body << "    (void)rt.invoke_chained_call(ctx, &aot_mem);\n";
@@ -1354,6 +1413,49 @@ std::string lower_constant_fpr_accesses(std::string text) {
 // generic lane/prefix helpers into compile-time templates so row/column mapping,
 // scalar-vs-control selection and 1..4-lane loops disappear before MSVC sees the
 // giant translation units. Dynamic-size matrix helpers remain untouched.
+// The constant-index VFPU scalar accessors are a compile-time optimization and
+// assert ScalarRegister < 144. A decoded instruction can contain an out-of-range
+// scalar field (typically data reached as code), and the runtime helpers define
+// safe behaviour for it: reads return 0, writes are ignored. Keep that exact
+// behaviour by lowering only indices the template accepts.
+std::string lower_constant_vfpu_scalar_reads(const std::string &text) {
+    static const std::regex pattern(R"(ctx\.vfpu_scalar_bits\(([0-9]+)u\))");
+    std::string out;
+    std::size_t last = 0;
+    for (std::sregex_iterator it(text.begin(), text.end(), pattern), end; it != end; ++it) {
+        const auto &match = *it;
+        out.append(text, last, static_cast<std::size_t>(match.position()) - last);
+        const unsigned long index = std::strtoul(match[1].str().c_str(), nullptr, 10);
+        if (index < 144u) {
+            out += "ctx.vfpu_scalar_bits_ct<" + match[1].str() + "u>()";
+        } else {
+            out += match[0].str();
+        }
+        last = static_cast<std::size_t>(match.position() + match.length());
+    }
+    out.append(text, last, std::string::npos);
+    return out;
+}
+
+std::string lower_constant_vfpu_scalar_writes(const std::string &text) {
+    static const std::regex pattern(R"(ctx\.set_vfpu_scalar_bits\(([0-9]+)u, ([^;\n]+)\);)");
+    std::string out;
+    std::size_t last = 0;
+    for (std::sregex_iterator it(text.begin(), text.end(), pattern), end; it != end; ++it) {
+        const auto &match = *it;
+        out.append(text, last, static_cast<std::size_t>(match.position()) - last);
+        const unsigned long index = std::strtoul(match[1].str().c_str(), nullptr, 10);
+        if (index < 144u) {
+            out += "ctx.set_vfpu_scalar_bits_ct<" + match[1].str() + "u>(" + match[2].str() + ");";
+        } else {
+            out += match[0].str();
+        }
+        last = static_cast<std::size_t>(match.position() + match.length());
+    }
+    out.append(text, last, std::string::npos);
+    return out;
+}
+
 std::string lower_constant_vfpu_accesses(std::string text) {
     const std::regex read_prefix(
         R"(ctx\.read_vfpu_vector_with_source_prefix\(([A-Za-z0-9_]+), ([0-9]+)u, ([1-4])u, ([01])u\);)" );
@@ -1405,15 +1507,9 @@ std::string lower_constant_vfpu_accesses(std::string text) {
     text = std::regex_replace(text, vscl,
         "ctx.execute_vfpu_vscl_ct<$1u, $2u, $3u, $4u>();");
 
-    const std::regex scalar_read(R"(ctx\.vfpu_scalar_bits\(([0-9]+)u\))");
-    text = std::regex_replace(text, scalar_read,
-        "ctx.vfpu_scalar_bits_ct<$1u>()");
-
+    text = lower_constant_vfpu_scalar_reads(text);
     // set_vfpu_scalar_bits second arguments in generated code stay on one line.
-    const std::regex scalar_write(
-        R"(ctx\.set_vfpu_scalar_bits\(([0-9]+)u, ([^;\n]+)\);)" );
-    text = std::regex_replace(text, scalar_write,
-        "ctx.set_vfpu_scalar_bits_ct<$1u>($2);");
+    text = lower_constant_vfpu_scalar_writes(text);
     return text;
 }
 
@@ -1443,7 +1539,8 @@ int generate_auto(const std::filesystem::path &elf_path,
     if (const auto module = elf.find_module_info(memory, load_base)) imports = elf.scan_imports(memory, *module);
     std::set<std::uint32_t> import_stubs;
     for (const auto &import : imports) import_stubs.insert(import.stub_address);
-    const auto program = psprecomp::analyze_program(elf, memory, load_base);
+    const auto program =
+        psprecomp::analyze_program(elf, memory, load_base, 131072u, extra_seeds_from_env());
     if (program.executable_ranges.empty()) throw psprecomp::Error("ELF has no executable ranges");
 
     std::filesystem::create_directories(output_dir);

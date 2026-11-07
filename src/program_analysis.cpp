@@ -410,10 +410,15 @@ bool is_executable_address(const std::vector<ExecutableRange> &ranges, std::uint
 ProgramAnalysis analyze_program(const Elf32Image &elf,
                                 const GuestMemory &memory,
                                 std::uint32_t load_base,
-                                std::size_t max_instructions_per_function) {
+                                std::size_t max_instructions_per_function,
+                                const std::vector<std::uint32_t> &extra_seeds) {
     ProgramAnalysis program{};
     program.executable_ranges = executable_ranges_for(elf, load_base);
     program.seeds = collect_initial_seeds(elf, memory, load_base, program.executable_ranges);
+    for (const std::uint32_t seed : extra_seeds) {
+        if (is_executable_address(program.executable_ranges, seed))
+            program.seeds.emplace(seed, "explicit_seed");
+    }
     program.functions.reserve(program.seeds.size());
 
     std::unordered_map<std::uint32_t, std::size_t> label_owners;

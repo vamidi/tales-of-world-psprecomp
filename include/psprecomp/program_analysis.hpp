@@ -38,9 +38,11 @@ struct ProgramAnalysis {
 [[nodiscard]] bool is_executable_address(const std::vector<ExecutableRange> &ranges,
                                          std::uint32_t address) noexcept;
 
-[[nodiscard]] ProgramAnalysis analyze_program(const Elf32Image &elf,
-                                              const GuestMemory &memory,
-                                              std::uint32_t load_base,
-                                              std::size_t max_instructions_per_function = 131072u);
+[[nodiscard]] ProgramAnalysis analyze_program(
+    const Elf32Image &elf,
+    const GuestMemory &memory,
+    std::uint32_t load_base,
+    std::size_t max_instructions_per_function = 131072u,
+    const std::vector<std::uint32_t> &extra_seeds = {});
 
 } // namespace psprecomp
