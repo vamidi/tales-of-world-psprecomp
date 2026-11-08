@@ -6,6 +6,7 @@ A profile contains everything that is specific to one PSP title. The framework r
 
 ```text
 profiles/<id>/
+  PSP_PROJECT_STATE.md  Canonical profile state; one per profile
   CMakeLists.txt
   README.md
   config/          Profile configuration and analysis inputs
@@ -16,7 +17,7 @@ profiles/<id>/
   tests/           Profile-specific regression tests
   tools/           Profile-specific generation or conversion helpers
   third_party/     Dependencies and their license notices
-  progress/        Local development handoffs/history; ignored by Git
+  progress/        Local benchmark artifacts and scripts; ignored by Git
 ```
 
 Do not put commercial executables, disc images, game assets, decrypted EBOOTs, captures made from copyrighted assets, or local analysis dumps in the repository.
@@ -63,9 +64,17 @@ If generated AOT files are checked in, document:
 
 Generated C++ may contain game addresses because it belongs to the profile. Reusable root code should not.
 
-## 7. Keep progress material out of the public tree
+## 7. Keep one canonical state per profile
 
-Use `profiles/<id>/progress` for handoffs, one-off benchmark notes and old stage reports. The root `.gitignore` excludes every profile's `progress` directory. Current build/run scripts should have stable names instead of accumulating stage-numbered copies.
+Each profile owns exactly one `profiles/<id>/PSP_PROJECT_STATE.md`. It records
+identity, build/run commands, corpus status, current diagnosis, HLE coverage,
+verification results and next steps. Read and update that file instead of
+creating a new handoff or assessment document.
+
+Use `profiles/<id>/progress` only for ignored local benchmark artifacts,
+one-off scripts and old stage reports. The root `.gitignore` excludes every
+profile's `progress` directory. Current build/run scripts should have stable
+names instead of accumulating stage-numbered copies.
 
 ## 8. License boundaries
 
