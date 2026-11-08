@@ -7,7 +7,7 @@
 ## Repository
 
 - PSPRecomp path: `D:\Personal\C++\tales-of-world-psprecomp`
-- Git branch / commit: `master` / `a068b45`
+- Git branch / commit: `master` / `bbc01a0`
 - Working tree: tow-1 host changes for font, OSK, MsgDialog, Fpl, SAS end
   flag, Atrac3plus stubs, pad script, and diagnostics; docs conversion in
   progress.

@@ -6,7 +6,7 @@
 ## Repository
 
 - PSPRecomp path: `D:\Personal\C++\tales-of-world-psprecomp`
-- Git branch / commit: `master` / `a068b45`
+- Git branch / commit: `master` / `bbc01a0`
 - OS / compiler / generator: Windows / MSVC / Ninja or Visual Studio
 - Build scripts: `profiles/vcs/scripts/build_fast.bat`,
   `profiles/vcs/scripts/build_release.bat`

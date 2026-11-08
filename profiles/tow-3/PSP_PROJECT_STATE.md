@@ -6,7 +6,7 @@
 ## Repository
 
 - PSPRecomp path: `D:\Personal\C++\tales-of-world-psprecomp`
-- Git branch / commit: `master` / `a068b45`
+- Git branch / commit: `master` / `bbc01a0`
 - OS / compiler / generator: Windows / MSVC 14.51 / Ninja
 - Build directory: not configured yet (`out/tow-3` absent)
 

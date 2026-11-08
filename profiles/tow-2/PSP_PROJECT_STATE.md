@@ -7,7 +7,7 @@
 ## Repository
 
 - PSPRecomp path: `D:\Personal\C++\tales-of-world-psprecomp`
-- Git branch / commit: `master` / `a068b45`
+- Git branch / commit: `master` / `bbc01a0`
 - Working tree: tow-2 profile and host are present; framework bring-up patch
   is pinned under `progress/`.
 - OS / compiler / generator: Windows / MSVC 14.51 / Ninja
