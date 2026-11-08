@@ -1,0 +1,1347 @@
+# PSP Project State — tow-2
+
+> Auto-maintained. Read at session start, update after every major action.
+> This is the canonical state for `profiles/tow-2`. The old
+> `progress/ASSESSMENT.md` is retained only as a redirect.
+
+## Repository
+
+- PSPRecomp path: `D:\Personal\C++\tales-of-world-psprecomp`
+- Git branch / commit: `master` / `a068b45`
+- Working tree: tow-2 profile and host are present; framework bring-up patch
+  is pinned under `progress/`.
+- OS / compiler / generator: Windows / MSVC 14.51 / Ninja
+- Build directories: `out/framework`, `out/tow-2`
+
+## Target
+
+- Title / region: Tales of the World: Radiant Mythology 2 (Japan,
+  English-patched ISO)
+- Product code: `ULJS00175`
+- Profile: `tow-2`
+- Executable: `profiles/tow-2/game/eboot.dec`
+- ELF type / load base: `0xFFA0` (PSP PRX) / `0x08804000`
+- SHA-256: `5848ccfaa3291f1dcbef8b04f74de471f5a20387340a8a835c5fb95644f52b80`
+- Module / gp: `TOW2_ALFASYSTEM` / `0x08CB5FA0`
+- Entry: `0x08804124`
+- Current phase: 7 — post-movie title transition / gameplay stability.
+
+## Analysis and corpus
+
+- Report: `profiles/tow-2/analysis/tow2_report.json`
+- Relocations: 213,047; unsupported 0; invalid 0
+- Imports: 416 across SDK and per-character/enemy data modules
+- Function seeds: 38,213
+- Corpus: `generated/`, 567 units / 100.3 MB / 416 import wrappers
+- Secondary corpus: `generated_libfile/`, 1 unit / 10 functions, load base
+  `0x08000000` for the real `libfile.prx`
+- Framework bring-up patch:
+  `progress/framework-tow1-bringup.patch`
+  (SHA-256 `147cd0c97d66be8e113f33ccf0949e075968b272f9a7688513895abcc68d7548`)
+
+## Build and run
+
+```bat
+cmake -S . -B out/tow-2 -G Ninja ^
+  -DCMAKE_BUILD_TYPE=Release ^
+  -DPSPRECOMP_PROFILE=tow-2 ^
+  -DPSPRECOMP_MSVC_MP_JOBS=8 ^
+  -DPSPRECOMP_GENERATED_OPT_LEVEL=2 ^
+  -DPSPRECOMP_BUILD_PROFILE_TESTS=OFF
+cmake --build out/tow-2 --target Tow2Native
+out\tow-2\bin\Tow2Native.exe profiles\tow-2\game\eboot.dec profiles\tow-2\game\root
+```
+
+Scripts: `profiles\tow-2\scripts\build.bat`, `generate.bat`, `play.bat`.
+
+Last verified result:
+
+- `Tow2Native` builds and reaches first dispatch.
+- Opening movie: H.264 480x272 + Atrac3+ PCM decode; visible frames.
+- Movie task now returns `0`; ring-buffer packet cap fixed the movie-end
+  equality (`+18 == +30 == 0xD06000`).
+- Post-movie title transition is still blocked; `title.arc` is not opened.
+- Title trigger diagnostic creates the title renderer child, but it crashes at
+  `0x08A76EE8` with `a0=5` treated as a pointer (`s0=0x08DA1A70`).
+
+## Current diagnosis
+
+- Observation: after movie cleanup, `FileReadingTask`/`user_main`/
+  `cSoundEffect` settle, but the title task does not open `title.arc`.
+- Layer: profile HLE/scheduler and title task argument contract, not the
+  generated corpus.
+- Hypothesis: the title task's child receive contract is wrong: the child is
+  passed mode/index `5` where it expects the title object/state pointer.
+- Evidence: title object global `[0x08D14F10] = 0x08D51A70`; trigger clears
+  `[obj+0x4F68]`, runs `0x08A4B0FC`, starts title task `0x08970000`; child
+  crashes at `0x08A76EE8`.
+- Next test: inspect `0x08A76EE8` and the title object/task argument contract,
+  fix the child argument/state, then rerun until `title.arc` opens.
+
+## HLE surface
+
+- Framework/profile: scheduler, threads, stacks, partition memory, module
+  load/start stubs, semaphores, mutexes, event flags, mailboxes, callbacks.
+- I/O: `IoFileMgrForUser`; raw UMD sector semantics; extracted `game/root`.
+- Media: `sceMpeg` lifecycle/ringbuffer/stream/AU + FFmpeg H.264/Atrac3+;
+  `sceDmacMemcpy`; presenter; Win32 input.
+- Audio: silent `sceSasCore` with end-flag behavior; silent `sceAudio`.
+- Utility/font: savedata stub, system params, `sceLibFont`.
+- Real `libfile.prx` corpus and dispatch at `0x08000000`.
+
+## Changes and verification
+
+- Movie-end fixes: ring-buffer `Put` cap; `AvcDecode` EOF returns success;
+  `sceKernelDeleteThread` deletes the target UID, not the caller.
+- Title trigger is a diagnostic (`PSPRECOMP_TOW2_TITLE_TRIGGER`), not a final
+  fix.
+- Tests: framework `psprecomp_tests` 1/1 passed at the pinned framework
+  revision. Re-run after any framework change.
+
+## Learned patterns
+
+- `sceKernelDeleteThread` must delete the requested UID; completing the
+  caller kills `user_main` during movie cleanup.
+- The movie task's real end result is `0`; returning `0x80628002` changes the
+  cleanup path.
+- `sceMpegRingbufferPut` must cap writes to the PMF packet count; 19 extra
+  packets prevent the movie-player state-1 transition.
+- The title child argument is a pointer/state, not a mode enum.
+
+## Historical material
+
+The original root state section and the full port assessment are preserved
+below verbatim.
+
+---
+
+## Legacy root-state section (verbatim)
+
+## tow-2 (English `ULJS00175`) — Phase A complete (2026-11-06)
+
+- Input: `profiles/tow-2/game/eboot.dec`
+  - SHA-256 `5848ccfaa3291f1dcbef8b04f74de471f5a20387340a8a835c5fb95644f52b80`
+  - ELF PRX `0xFFA0`, load base `0x08804000`, entry `0x08804124`
+  - Module `TOW2_ALFASYSTEM`, gp `0x08CB5FA0`
+  - 213,047 relocations (0 invalid/unsupported), 416 imports, 38,213 function seeds
+  - Source was the ISO's already-decrypted `EBOOT.BIN`; a synthetic section table was
+    added because the ISO copy had `e_shoff = 0`.
+- Corpus: `profiles/tow-2/generated/`
+  - 567 units / 100.3 MB, 416 import wrappers
+  - `auto_codegen_report.json`: 567/567 units rewritten
+- Added `Tow2Corpus` object-library target in `profiles/tow-2/CMakeLists.txt`;
+  it compiles the corpus without a host (569/569 build steps, 568 objects).
+- Framework: HEAD `2c2aadc`, rebuilt; `psprecomp_tests` 1/1 passed.
+  tow-1 bring-up diff pinned at
+  `profiles/tow-2/progress/framework-tow1-bringup.patch`
+  (SHA-256 `147cd0c97d66be8e113f33ccf0949e075968b272f9a7688513895abcc68d7548`).
+- Analysis: `profiles/tow-2/analysis/tow2_report.json` + import/seed/function CSVs.
+- Next: Phase B — `profiles/tow-2/host/main.cpp` bootstrap + minimal HLE; reach
+  first dispatch before media/gameplay.
+
+### tow-2 Phase B — first dispatch (2026-11-06)
+
+- Added `profiles/tow-2/host/main.cpp`, `tow2_hle.h`, `tow2_hle.cpp`.
+- `Tow2Corpus` objects are now reused by `Tow2Native` (no double compile).
+- `Tow2Native.exe` builds and reaches first dispatch:
+  entry `0x08804124`, gp `0x08CB5FA0`, arena `0x08D15000`,
+  222,433 functions, 213,047 relocations (0 invalid/unsupported).
+- Triage chain:
+  1. `SysMemUserForUser::0xEBD5C3E6` (`sceKernelSetCompiledSdkVersion395`) — implemented, returns 0
+  2. `SysMemUserForUser::0xF77D77CB` (`sceKernelSetCompilerVersion`) — implemented, returns 0
+  3. `ThreadManForUser::0x446D8DE6` (`sceKernelCreateThread`) — next blocker
+- Next: Phase C — thread scheduler + partition memory HLE.
+
+### tow-2 Phase C — scheduler + kernel objects (2026-11-06)
+
+- ISO extracted to `profiles/tow-2/game/root`: 10,816 files / 794.6 MB.
+- `tow2_hle.cpp` now implements:
+  - threads/stacks/contexts, create/start/exit/delete, priorities, delay,
+    wait-thread-end, sleep/wakeup
+  - semaphores, mutexes, event flags, mailboxes, callbacks
+  - partition memory + raw block allocator
+  - UMD-ready, power callback, controller sampling, boot-level GE/display
+- Boot chain: `module_start` (uid 0) → `user_main` (uid 1) →
+  `cModuleManager` (uid 2, priority 17).
+- Guest memory: `UserSbrk` 0x32000 @ `0x08D15000`; `MainMemory` 16 MB @
+  `0x08D47000`; `SceGuSignal` event flag created.
+- Next blocker: `ModuleMgrForUser::0x977DE386` (`sceKernelLoadModule`).
+- Note: GE lists are accepted but not rasterized yet; renderer still pending.
+
+### tow-2 Phase D — I/O + module loading (2026-11-06)
+
+- `game/tow2.iso` hardlink created for raw UMD paths.
+- `IoFileMgrForUser` implemented: open/openAsync/close/read/readAsync/
+  waitAsyncCB/lseek/getstat/dopen/dread/dclose/devctl/ioctl/write/rename.
+  Normal files are byte-addressed; raw `umd0:`/`umd1:` is sector-addressed.
+- `ModuleMgrForUser` implemented: load/start/stop/unload/stop-unload-self,
+  get module id / id-by-address. Observed module loads:
+  `libfont.prx`, `libfile.prx` (stubbed UIDs).
+- Added `sceLibFont`, `sceUtility` system params + savedata stub,
+  `sceSuspendForUser` power/volatile memory, silent `sceAudio` bookkeeping.
+- Boot now runs `FileReadingTask` and `cSoundMusic`/`cSoundVoice`/
+  `cSoundEffect`; event flags `cOnMediaStream`, `cSoundMusic`, `cSoundVoice`,
+  `cSoundEffect` created.
+- Next blocker: `sceSasCore::0x42778A9F` (`__sceSasInit`).
+- I/O is implemented but not yet exercised; no archive open has occurred.
+
+### tow-2 Phase E — SAS + real libfile module (2026-11-06)
+
+- Silent `sceSasCore` implemented (init/core/grain/output-mode/envelope/setters).
+- `libfile.prx` is a plain ELF/PRX; it is the title's file-index module.
+- Generated a secondary corpus at `profiles/tow-2/generated_libfile`
+  (1 unit, 10 functions, load base `0x08000000`, `libfile_` symbol prefix).
+- `Tow2ModuleCorpus` is linked into `Tow2Native`; `libfile.prx` is loaded and
+  relocated at `0x08000000`, and `libfile::0xD8E69C7D` calls the real export at
+  `base+0x10` through `Runtime::invoke_isolated_aot`.
+- Boot now creates `UMD_SAMPLE_IO_SEMA` and reaches `sceMpegInit`.
+- Next blocker: `sceMpeg::0x682A619B` (`sceMpegInit`); next work is the
+  `sceMpeg`/`sceAtrac3plus` + FFmpeg media port (tow-1 reference).
+
+### tow-2 Phase E — FFmpeg media decode (2026-11-06)
+
+- Ported `tow1_mpeg.*` / `tow1_atrac.*` to `tow2_mpeg.*` / `tow2_atrac.*`.
+- Linked the shared FFmpeg build into `Tow2Native` (WinGet LGPL build;
+  runtime DLLs copied post-build).
+- Ported the full tow-1 `sceMpeg` HLE surface + `sceDmacMemcpy` and
+  `StdioForUser`.
+- Verified `title.pmf`: H.264 480x272 decodes; decoded frames are written to
+  guest video buffers and DMA-copied to `0x04088000` / `0x04110000`; the
+  private Atrac stream decodes 2,042 frames to 8192-byte PCM buffers.
+- The movie reaches EOF; the post-movie loop spins on
+  `sceMpegRingbufferAvailableSize` / `sceDisplayGetVcount`, and the
+  `cSoundMusic` / `cSoundVoice` event flags still have waiters (same class as
+  tow-1's post-movie sound blocker).
+- No tow-2 presenter yet: frames are in VRAM but GE/display are boot stubs.
+- Next: post-movie sound/event transition + GE interpreter/presenter.
+
+### tow-2 Phase E — presenter + visible movie (2026-11-06)
+
+- Ported `tow1_window.*` to `tow2_window.*` (Win32 GDI, 480x272, formats
+  0/1/3, keyboard pad input, frame diagnostics/dumps).
+- `sceDisplaySetFrameBuf` now presents; `sceCtrlReadBufferPositive` reads the
+  live window buttons.
+- Added a temporary direct movie-buffer present after `sceDmacMemcpy` for
+  `0x04088000`/`0x04110000` (512x272 ABGR8888), because the GE blit is still a
+  stub.
+- Verified: frame dump present #374 is a recognizable opening-movie frame
+  (blue sky/ocean); live window displays the movie.
+- Env knobs: `PSPRECOMP_TOW2_NO_WINDOW`, `_SCALE`, `_FRAME_DIAG`,
+  `_FRAME_DUMP`, `_FRAME_DUMP_AT`, `_FRAME_DUMP_ALL`, `_PRESS_START`.
+- Remaining: post-movie `cSoundMusic`/`cSoundVoice`/ringbuffer loop, then the
+  GE interpreter for the title/menus.
+
+### tow-2 post-movie + SAS completion (2026-11-06)
+
+- Confirmed the 500M-dispatch pre-fix run stayed in the `cSoundEffect`
+  audio-block loop until stopped.
+- Ringbuffer accounting fixed (`Put` adds num; `GetAvcAu`/`GetAtracAu`
+  consume one) and MPEG EOF returns:
+  `GetAvcAu -> 0x80618001`, `AvcDecode -> 0x80628002`.
+- SAS completion: end flag cleared by `__sceSasSetKeyOn`, set after a grain;
+  post-movie `cSoundEffect` bits `0x15` published; `cOnMediaStream` bits
+  `0x0F` published at video EOF.
+- Verified: `user_main`, `soundThread`, and `cSoundEffect` all complete.
+- New blocker: `FileReadingTask` polls `cOnMediaStream` `0x0F` while the flag
+  is stuck at `0x10`; `title.arc` is not opened yet.
+- Do not use `PSPRECOMP_TOW2_FORCE_MEDIA_EVENTS` as a fix: it causes a
+  776k UMD open/lseek/close storm.
+- Diagnostics: `PSPRECOMP_TOW2_SOUND_DIAG` for event-flag wait/poll/signal.
+
+### tow-2 `cOnMediaStream` handshake trace (2026-11-06)
+
+- `FileReadingTask` sets `cOnMediaStream` bit `0x10` via
+  `sceKernelSetEventFlag` at `ra=0x08A5AF40`, `0x08A5AF90`, `0x08A5B0E0`.
+- It polls bits `0x0F` via `sceKernelPollEventFlag` at `ra=0x08A5ACE4`
+  (helper `0x08A5ACD0`, mode `0x21` = AND + CLEAR).
+- `user_main` completes at video EOF (`pc=0x08A63384`), so no consumer
+  publishes `0x0F`; the file task keeps polling with the flag at `0x10`.
+- Resetting to `0x0F` once does not help (the task re-arms `0x10`).
+  Re-signaling on every poll causes a 776k UMD open/lseek/close storm.
+- Root-cause hypothesis: `user_main` exits after the movie instead of
+  continuing into the title-loader/consumer path. Next: trace its return path
+  after the movie player and the `AvcDecode` EOF error handling.
+
+### tow-2 `user_main` post-movie trace (2026-11-06)
+
+- `0x08A632A0 jal 0x08A638F0` plays the movie; result stored at `fp+0x2C`.
+- Branching:
+  - result == 0: `WaitThreadEnd` -> `0x08A63358`
+  - result > 0: `WaitThreadEnd` + `sceMpegFlushAllStream` + clear
+    `0x08CB1F00` -> `0x08A63358`
+  - result < 0: direct to `0x08A63358`, skipping both
+- All paths run the full cleanup at `0x08A63384`..`0x08A635AC`
+  (`FreeAvcEsBuf`, `UnRegistStream` x2, `sceMpegDelete`,
+  `RingbufferDestruct`, `sceMpegFinish`, `0x08A65064`) and return.
+- Corrigendum: the earlier `user_main` completion was **not** normal. The
+  `sceKernelDeleteThread` HLE (`0x9FA03CD3`) completed the caller; the movie
+  cleanup deletes sound thread uid 9, so it terminated `user_main` at
+  `0x08A63384`. Fixed to delete the target uid; verified
+  `[tow2] delete thread uid=9 name="soundThread"` and `user_main` resumes.
+- Movie result at `fp+0x2C` is `0x80628002` (negative `AvcDecode` EOF), so
+  the wrapper skips `WaitThreadEnd` + `FlushAllStream`/`0x08CB1F00` clear.
+- Media experiments all negative: one-shot `0x0F` ack is consumed but the
+  file task re-arms `0x10`; drain mode reaches 75k+ acks without a title
+  load; positive EOF makes the movie player retry-spin at `0x08A72430`.
+- Next test: trace the movie wrapper caller (`0x08A63000`, movie task around
+  `0x08A62A78`) and the guest cancel path for the `FileReadingTask` media
+  request. The worker must be stopped; acking/flushing does not stop it.
+
+### tow-2 movie-end producer trace (2026-11-07)
+
+- Movie task entry is `0x08A62D18`; `PSPRECOMP_TRACE_PC` shows caller
+  `ra=0x08A4C848` and `a0` = `disc0:/PSP_GAME/USRDIR/title/title.pmf`.
+  The caller is a one-shot wrapper at `0x08A4C818`; it calls the task and
+  returns, with no file-worker cancellation.
+- `0x08A62D18` is also where the MPEG ring buffer is constructed:
+  `ring=0x09FEF90C packets=960 data=0x09428380 cb=0x08A62C20 arg=0x09FEFA14`.
+  `arg` is the movie task's `fp+0x144` stream object. Callback `0x08A62C20`
+  is a copy/read helper, not the `FileReadingTask` stop.
+- The file worker's stream object is `0x08D4F364`: `+0x10=0x00000501`
+  (`cOnMediaStream` event flag), `+0x14=0x80020323`, other fields zero.
+- Only **three** guest `cOnMediaStream` sets occur in the entire run:
+  `bits=0x10` at `ra=0x08A5B0E0`, `0x08A5AF40`, `0x08A5AF90` (all
+  `FileReadingTask`). No guest code ever publishes `0x0F`.
+- At host video EOF: `packets=960 read=2854 written=6688 used=0`.
+  The worker has already written the whole file; the final `0x10` is a
+  completion request, not a missing packet.
+- Ack experiments are falsified: one-shot `0x0F` is consumed and the worker
+  re-arms `0x10`; per-frame/per-consume `0x0F` does not stop it; drain mode
+  reaches 75k+ acks and loops. The HLE is bypassing the guest ring-buffer /
+  read-pointer protocol, so the worker's state never reaches EOF cleanly.
+- Next test: PPSSPP A/B at the movie end (`0x08A5AEC0`/`0x08A5ACE4`,
+  `0x08A62C20`, `0x08D4F364`) to capture the real `0x0F` producer, ring-buffer
+  callback arguments, and worker stop condition. Then model that state in the
+  HLE instead of synthesizing event bits.
+
+### tow-2 PPSSPP A/B — real movie contract (2026-11-07)
+
+- PPSSPP instance: `ULJS00175`, v1.01, debugger port `52814`.
+- Real movie-task result at cleanup `0x08A63384`:
+  - `[fp+0x2C] = 0`
+  - `[fp+0x30] = 0x00010000`
+  - `[fp+0x164] = 0x08F0E800`
+- The native HLE returned `0x80628002` from `AvcDecode` at EOF. That is the
+  contract divergence: the real task ends with result 0, not a fatal error.
+- Real `cOnMediaStream` event flag UID is `0x121` (dynamic); the native HLE
+  assigned `0x501`. The flag is identified by name, so the UID difference is
+  expected.
+- Real stream object in PPSSPP is at `0x08D4F3E4` (native `0x08D4F364 + 0x80`):
+  `+0x10 = 0x121`, `+0x14 = 0x80020323`.
+- Real post-cleanup consumer publishes `0x121` bits `0x01`, `0x02`, `0x04`,
+  `0x10` — **never `0x0F`**. These occur after `0x08A63384`; the guest worker
+  polls `0x0F` as a mask, so the individual bits are the acknowledgement.
+- Native WIP after matching the real EOF success:
+  - `AvcDecode` EOF now returns 0 (success, no frame).
+  - `AtracPlayer::at_end()` added; `GetAtracAu` returns `0x80618001` when
+    video EOF or PCM exhausted.
+  - 60M and 120M runs now stop at `0x08A63B54` in the movie player, with
+    `cOnMediaStream = 0x0F` and `FileReadingTask` delayed. The file-worker
+    stall is gone, but the movie player still spins in its AU-fetch loop.
+- Next test: capture the real `GetAvcAu`/`GetAtracAu` return at the end
+  (`0x08A63B54` after GetAvcAu, `0x08A63B10` after GetAtracAu) and make the
+  guest-side `GetAvcAu` return `NO_DATA` at the true guest stream end.
+- A/B scripts: `profiles/tow-2/progress/ppsspp_tow2_ab.mjs`,
+  `ppsspp_tow2_result.mjs`.
+
+### tow-2 exit-path counters A/B (2026-11-07)
+
+PPSSPP at `0x08A63BB8` (real movie-player exit path):
+
+```text
+v0       = 0x00000000
+fp       = 0x09FFF450
+fp+0x18  = 0x00D06000
+fp+0x1C  = 0x00001977   (6007 vblanks, full movie)
+fp+0x30  = 0x00D06000
+fp+0x34  = 0x00000001
+movie end [fp+0x2C] = 0
+```
+
+Native at 60M (`0x08A63B54`, `sceDisplayGetVcount` loop):
+
+```text
+vcount   = 983
+fp       = 0x09FEF880
+fp+0x18  = 0x00960000
+fp+0x1C  = 0x000003D6   (982)
+fp+0x30  = 0x00D06000
+```
+
+`fp+0x30` matches. The native is at vblank ~983 (~16 s of the ~100 s
+movie), while the real exit is at 6007. The native is progressing, not
+stuck. The 500M run still stops at `0x08A63B54` with `FileReadingTask`
+delayed; it is slow, not deadlocked at the old file-worker gate.
+
+Next test: capture the 500M/stop-state counters (log when vcount crosses
+5900/6000/6100) and determine whether the native reaches the real exit
+condition or whether the host-decoder EOF signal is still missing. A full
+run may need ~1.2B dispatches at the current frame rate.
+
+### tow-2 AU-return A/B and current WIP (2026-11-07)
+
+- PPSSPP capture at the AU returns:
+  - `0x08A63B54` after `sceMpegGetAvcAu`: last values are all `0x00000000`.
+  - `0x08A63B10` after `sceMpegGetAtracAu`: last values alternate
+    `0x00000000` / `0x00000001`.
+  - Neither ever returns `NO_DATA` (`0x80618001`) at the movie end.
+- Therefore the native `used == 0`, host-EOF, and PMF-completion AU gates were
+  all wrong and were reverted.
+- Verified change kept: `AvcDecode` at host EOF returns `0` (the real movie
+  task result is 0).
+- Current 60M state: stop at `0x08A63B54`, `FileReadingTask` delayed,
+  `user_main` running at `0x08AEE260`. The old `cOnMediaStream` 0x10 polling
+  stall is gone.
+- Remaining divergence is the movie-player state machine/exit, not the AU
+  returns. Next test: capture the `0x08A72550` return at `0x08A63BB8` and the
+  movie-player counters (`fp+0x18`, `fp+0x1C`, `fp+0x30`) at the real cleanup
+  vs the native loop. The A/B script is
+  `profiles/tow-2/progress/ppsspp_tow2_au.mjs`.
+
+### tow-2 500M stop-state diagnosis (2026-11-07)
+
+Run with `PSPRECOMP_TOW2_MOVIE_STOP=1`, 500M and 520M:
+
+```text
+video_eof=1
+decoded_frames=2847
+vcount=6434
+fp+0x18=0x00D10000
+fp+0x1C=0x00001921        (6433)
+fp+0x30=0x00D06000
+fp+0x34=0x00000000
+ring: packets=960 read=2854 written=6688 used=0
+```
+
+PPSSPP at the real `0x08A63BB8` exit path:
+
+```text
+v0=0
+fp+0x18=0x00D06000
+fp+0x1C=0x00001977        (6007)
+fp+0x30=0x00D06000
+fp+0x34=0x00000001
+```
+
+The movie player copies `fp+0` to `fp+0x34` at `0x08A63A04`; state `1` is
+the exit path. The state-1 transition at `0x08A63A44` requires:
+
+```text
+fp+0x18 == fp+0x30
+```
+
+Native has `fp+0x18 - fp+0x30 = 0xA000` (20 packets); PPSSPP has equality.
+The worker wrote 6688 packets but `title.pmf` is 6669 packets — 19 extra
+packets, matching the ~20-packet overshoot. This is the likely root cause of
+the stuck state: the ring-buffer write count overshoots, so the equality
+never fires, state 1 / `+0x34=1` is never set, and the movie player loops.
+
+Next test: align/cap the ring-buffer packet accounting to the PMF packet count
+(exclude the 19 extra packets) or correct the guest `fp+0x18` end increment;
+then rerun 500M and expect state 1, `[fp+0x2C]=0`, post-movie consumer bits,
+and `title.arc`.
+
+### tow-2 PMF Put cap — movie end fixed (2026-11-07)
+
+- `sceMpegRingbufferPut` now caps the cumulative ring-buffer write at
+  `g_pmf_packet_count - 1` (the first 2048-byte PMF packet is the PSMF header)
+  and returns the actual number written.
+- 500M result:
+
+```text
+[tow2] movie result=0x00000000 fp=0x09FEF8D0
+```
+
+The movie task now returns **0**, matching PPSSPP. The movie-player counters
+equal (`+18=+30=0xD06000`), and the cleanup is reached.
+
+- 600M stop:
+
+```text
+Runtime stopped: dispatch limit at 0x08AC0C40
+uid=1 user_main     sleeping at 0x08A70420
+uid=4 FileReadingTask delayed
+uid=7 cSoundEffect  running at 0x08ABDDD8
+cOnMediaStream pattern=0
+cSoundEffect pattern=0
+```
+
+No `title.arc` yet. The post-movie/title transition is now the active work.
+Next test: extend the post-movie run and inspect `cSoundEffect`/SAS completion.
+The silent SAS completion signal is currently gated on `g_mpeg_video_eof`;
+after movie cleanup that flag is reset, so title sound effects may never
+publish `cSoundEffect` completion. Test signaling `cSoundEffect` 0x15
+unconditionally after a grain, or identify the post-movie title requester.
+
+### tow-2 post-movie title blocker (2026-11-07)
+
+- Made the silent SAS `cSoundEffect` 0x15 publication unconditional after a
+  grain. Result: `cSoundEffect` now reaches `completed`.
+- 600M/700M stop:
+
+```text
+Runtime stopped: dispatch limit at 0x08A59638
+uid=1 user_main     sleeping at 0x08A70420
+uid=4 FileReadingTask running at 0x08A59768
+uid=7 cSoundEffect  completed
+cOnMediaStream pattern=0
+```
+
+- No `title.arc`.
+- PPSSPP at the movie end has the same task state:
+  `[0x08D0317C] = 0x040CC000`, `[0x08D03198] = 0`.
+- The early task path is `0x08804A64`; the title state is `0x08A4B118`, and
+  the title-thread creator is `0x08A4B168` (`sceKernelCreateThread` via
+  `0x08AA94F0`). Callers of `0x08A4B168` include `0x088138D8`,
+  `0x08813ED0`, `0x08813F98`, and `0x0898BF48`. These are not reached in
+  the native run.
+- Next test: trace/count the title callers and identify the missing module/
+  task request that should create the title thread and open `title.arc`.
+  PPSSPP breakpoints on `sceIoOpen`/file-helper destabilize the debugger
+  socket, so use the stable movie/task breakpoints or static trace.
+
+### tow-2 title counted-PC result (2026-11-07)
+
+`PSPRECOMP_COUNT_PC` at 600M:
+
+```text
+0x08A4B118 (title update)          750
+0x08A4B0FC (title load helper)       0
+0x08A4B168 (title thread creator)    0
+0x08813874 (title state)             0
+0x08813F00 (title state)             0
+0x08A4C818 (movie wrapper)          748
+0x08804A64 (task loop)                1
+```
+
+The title update runs but returns early on its `+0x4F68` flag. The title
+state `0x08813874` is called from `0x08970AE8` (unit 0182), and the title
+thread creator is downstream of it. Neither runs.
+
+Next: count/trace `0x08970000`/`0x08970A00` and its caller to identify the
+missing post-movie task/module request; then rerun for `title.arc`.
+
+### tow-2 title trigger result (2026-11-07)
+
+- Title object global: `[0x08D14F10] = 0x08D51A70`.
+- At movie cleanup the trigger clears `[obj+0x4F68]`, runs the title load
+  helper `0x08A4B0FC` (`ok=1`), then starts a native trampoline thread that
+  enters the title task `0x08970000` with the title object.
+- The title task runs, calls `0x08A4B168`; the title renderer child is
+  created as uid 10.
+- The child crashes immediately:
+
+```text
+Guest memory access outside PSP RAM/EDRAM at 0x00000010
+recomp_unit_0313 pc=0x08A76EE8 a0=0x00000005 s0=0x08DA1A70
+ra=0x08A5FBC0
+```
+
+The title state is reached, but the title renderer child receives `a0=5`
+(a mode/index) and treats it as a pointer. `title.arc` is still not opened.
+
+- The trigger is gated by `PSPRECOMP_TOW2_TITLE_TRIGGER` and is a diagnostic,
+  not a final fix.
+- Next test: inspect `0x08A76EE8` and the title object/task argument contract
+  (`a0=5` vs the title object at `0x08DA1A70`), fix the child argument/state,
+  then rerun until `title.arc` opens.
+
+---
+
+## Port assessment (verbatim)
+
+# ToW2 port assessment — PSPRecomp
+
+> Local, git-ignored. Written before starting the tow-2 port.
+> Reference profile: `profiles/tow-1` (the working Alfasystem title).
+
+## 1. What this project actually is
+
+PSPRecomp is **static ahead-of-time recompilation**, not emulation and not a JIT.
+
+The pipeline is:
+
+```text
+decrypted ELF/PRX (Allegrex/MIPS)
+        │  psp_analyze
+        ▼
+functions + relocations + imports + module info
+        │  psp_recomp --auto
+        ▼
+profiles/tow-2/generated/*.cpp          (the whole game, translated to C++)
+        │  CMake + psprecomp_core
+        ▼
+Tow2Native.exe                           (native PC executable)
+```
+
+At runtime `Tow2Native` does **not** interpret PSP instructions or emulate a PSP CPU.
+It executes the generated C++ and supplies the PSP OS/hardware services through the
+profile host: threads, memory, file I/O, GE, audio, MPEG, font, utility, input.
+
+The boundary is deliberate:
+
+| Layer | Owns |
+|---|---|
+| Framework (`src/`, `include/psprecomp/`, `tools/`) | Allegrex decode, ELF/PRX load + relocation, guest memory, dispatch, scheduler visibility, generic codegen. No game addresses. |
+| Profile (`profiles/tow-2/`) | Generated corpus, HLE/NID contracts, bootstrap, GE renderer/interpreter, MPEG/Atrac, presenter, input, patches, tests. |
+
+So "porting ToW2" = generate the AOT corpus + write a tow-2 host that replays the
+PSP services the game needs. Decrypting the EBOOT was only input preparation.
+
+## 2. Current tow-2 state (verified)
+
+### Input identity — ready
+
+| Field | Value |
+|---|---|
+| Disc ID | `ULJS00175` (Japan; English-patched ISO) |
+| Input | `profiles/tow-2/game/eboot.dec` |
+| Size / SHA-256 | 6,595,314 bytes / `5848ccfaa3291f1dcbef8b04f74de471f5a20387340a8a835c5fb95644f52b80` |
+| ELF type / load base | `0xFFA0` / `0x08804000` |
+| Entry | `0x08804124` |
+| Module / gp | `TOW2_ALFASYSTEM` / `0x08CB5FA0` |
+| Relocations | 213,047 — 0 invalid, 0 unsupported |
+| Imports | 416 (225 core system + 191 net/runtime-module) |
+| Functions | 38,213; 90 truncated; 4.2M unsupported occurrences (mostly data-as-code) |
+
+The ISO also provides `title/title.pmf` (13.66 MB), `title/title.arc` (1.37 MB),
+`module/libfont.prx`, `module/libcrypt.prx`, `module/libfile.prx`, `battle_prx/*.prx`,
+`puzzle_prx`, and directory-based data (`game/`, `dungeon/`, `model/`, `sound/`, ...).
+
+### Profile — skeleton only
+
+- `CMakeLists.txt` is wired: `tow2_generate` exists; `Tow2Native` is only added when
+  both `generated/*.cpp` and `host/*.cpp` exist.
+- `scripts/generate.bat`, `build.bat`, `play.bat` exist and point at the right paths.
+- `generated/` is **empty**.
+- `host/` is **empty**.
+- No `tests/`, no profile HLE, no renderer/audio/presenter.
+
+### Framework state — usable, but not pinned
+
+- `out/framework` is configured with `PSPRECOMP_PROFILE=""` and Ninja.
+- `psp_recomp.exe` is current (built after the tow-1 codegen changes).
+- `psp_analyze.exe` is **older than `src/program_analysis.cpp`**; rebuild before trusting
+  seed/count differences.
+- The working tree has uncommitted tow-1 bring-up changes:
+  `include/psprecomp/decoder.hpp`, `program_analysis.hpp`, `src/decoder.cpp`,
+  `program_analysis.cpp`, `tools/codegen_main.cpp`.
+  Pin/commit these before generating a corpus so the corpus is reproducible.
+
+## 3. tow-1 reference inventory
+
+| Item | Value |
+|---|---|
+| Generated corpus | 657 files / 122.5 MB (655 units) |
+| Host code | ~465 KB across 14 TUs |
+| HLE registrations | 185 handlers / 22 libraries |
+| Imports | 252 |
+| Functions | 48,179 |
+| Status | Boots through archives, module load, savedata gate, `title.pmf` H.264 + Atrac3+; GE frames and presenter verified |
+| Current blocker | Post-movie: `cSoundManager` spins because silent SAS never clears the guest sound-busy flag; `title.arc` not opened |
+
+Reusable tow-1 subsystems (as reference, not drop-in): bootstrap, scheduler/thread HLE,
+IoFileMgr/UMD sector semantics, partition memory, module stubs, `sceMpeg` + FFmpeg,
+ATRAC3+ demux/decode, GE software rasterizer, Win32 presenter, input mapping.
+
+**Do not copy wholesale.** tow-1's HLE contains title-specific addresses and timing
+workarounds (e.g. sound flag `0x08E12440`, savedata state gate, module UID behaviour).
+Those must be re-derived for tow-2.
+
+## 4. Import overlap (the main leverage)
+
+| Comparison | Count |
+|---|---|
+| tow-2 imports | 416 |
+| tow-1 imports | 252 |
+| Shared `library::NID` | **219** |
+| tow-2 only | 197 |
+| tow-1 only | 33 |
+
+Shared core: ThreadManForUser 33, sceMpeg 25, sceSasCore 25, sceUtility 19,
+IoFileMgrForUser 14, sceGe_user 11, sceDisplay 9, sceAudio 9, sceLibFont 8,
+ModuleMgrForUser 7, sceUmdUser 5, SysMemUserForUser 5, plus DMA/Stdio/etc.
+
+tow-2-only is dominated by: `sceNetInet` 15, `sceNetApctl` 7, `sceNetAdhoc*` 10,
+extra `sceAtrac3plus` 6, and ~150 character/battle/puzzle PRX imports
+(`amp*`, `bst*`, `bom*`, `enm*`, `hum*`, `pla*`, player names, `puzzle`).
+
+Implication: **most of the core OS/media HLE logic is reusable in shape**, but the
+runtime PRX module surface is much larger than tow-1's.
+
+## 5. Readiness verdict
+
+| Area | State |
+|---|---|
+| Input identity | ✅ Ready |
+| Generator wiring | ✅ Ready |
+| Corpus | ❌ Empty |
+| Host bootstrap | ❌ Empty |
+| tow-2 HLE | ❌ Empty (219 imports have a tow-1 reference shape) |
+| Data/archive mapping | ❌ Not mapped |
+| GE/first frame | ❌ Not started |
+| Media | ❌ Not started |
+| Runtime PRX policy | ❌ Undecided |
+
+**Yes, we are ready to start the porting workflow — but at Phase 2, not "run the game".**
+The correct next step is corpus generation + a minimal host that reaches first dispatch.
+Porting all 416 imports up front is an anti-pattern.
+
+## 6. Main risks / unknowns
+
+1. **Runtime PRX modules (biggest scope risk).** ~150 character/battle/puzzle imports.
+   Boot/title probably does not need most; battle does. Decide per phase:
+   HLE-stub first, load/recompile selected PRX later, defer the rest.
+2. **Inherited SAS/audio blocker.** tow-1's silent SAS never signals completion and
+   blocks the post-movie title transition. tow-2 will likely hit the same wall if the
+   same stub is copied. Plan a minimal real SAS/audio output earlier, not after the wall.
+3. **GE command coverage.** tow-1's `tow1_ge.cpp` interprets a subset
+   (VADDR/IADDR, PRIM, BBOX/BJUMP, JUMP/CALL/RET, OFFSET/ORIGIN, matrices, END/FINISH).
+   `title.arc` will probably need textures/CLUT/blend paths from the VCS renderer.
+4. **Data/archive layout.** tow-1 uses EZBIND archives; tow-2 mixes directories,
+   `title.arc`, and PRX modules. UMD sector semantics and `translate_path` must be
+   re-verified for tow-2.
+5. **Corpus build cost.** Expect a tow-1-sized corpus (~500–650 units, ~100+ MB).
+   `/Ob0` and capped `/MP` are already set; clean rebuilds are expensive decisions.
+6. **Analyzer/generator drift.** Rebuild `psp_analyze`; use the same framework revision
+   for analysis, generation and the host. Commit/pin the tow-1 bring-up diff.
+7. **Unsupported-instruction noise.** 4.2M occurrences are not automatically real gaps
+   (tow-1 had 12.9M and still booted). Triage only reachable PCs after first dispatch.
+
+## 7. Recommended phase plan
+
+| Phase | Work | Exit gate |
+|---|---|---|
+| A. Corpus | Rebuild framework tools; pin SHA; run `tow2_generate`; compile units | `generated_units.hpp` + units compile; truncated/unsupported reviewed |
+| B. Bootstrap | Adapt tow-1 `main.cpp`; load/relocate; bind module/gp; register generated units | First dispatch, no missing function |
+| C. Core HLE | I/O + UMD + partition memory + threads + module stubs (share 219 NIDs) | Archive/file opens; boot proceeds |
+| D. First frame | GE interpreter + presenter (reuse tow-1 reference) | Non-black title/movie frame |
+| E. Media | `title.pmf` H.264 + ATRAC3+ | Movie plays |
+| F. Title transition | Minimal SAS/audio output; clear sound-busy; open `title.arc` | Title screen |
+| G. Gameplay | Input, savedata, runtime PRX policy, stability | N minutes stable |
+
+## 8. Decisions needed before Phase A
+
+1. **Runtime PRX strategy:** defer, HLE-stub, or recompile selected battle/puzzle modules?
+2. **HLE sharing:** copy tow-1's host and adapt (fast, profile-local) vs extract a shared
+   Alfasystem host library (cleaner, but a framework/profile-boundary decision).
+3. **Target milestone:** first frame / title screen first, or gameplay?
+4. **Pin the framework:** commit the current tow-1 bring-up changes before generating?
+
+## 9. Immediate next action
+
+```bat
+REM 1. rebuild framework tools so analysis and codegen match
+cmake --build out\framework
+
+REM 2. regenerate tow-2 analysis with the rebuilt analyzer
+out\framework\psp_analyze.exe profiles\tow-2\game\eboot.dec ^
+  profiles\tow-2\analysis\tow2_report.json 0x08804000
+
+REM 3. generate the AOT corpus
+out\framework\psp_recomp.exe profiles\tow-2\game\eboot.dec ^
+  --auto profiles\tow-2\generated 0x08804000 0x2000
+```
+
+Then add `profiles/tow-2/host/main.cpp` and the first HLE scaffold, and go for
+first dispatch before touching media or gameplay.
+
+## 10. Phase A result — complete
+
+Date: 2026-11-06
+
+- Framework rebuilt from the current working tree; `psprecomp_tests` 1/1 passed.
+- `psp_analyze` regenerated the tow-2 analysis with the rebuilt tool.
+- Corpus generated by `profiles/tow-2/scripts/generate.bat`:
+  - 567 units / 100.3 MB / 416 import wrappers
+  - 791,167 emitted code PCs, 222,433 registered blocks
+  - `auto_codegen_report.json`: 567/567 translation units rewritten
+- Added a profile-local `Tow2Corpus` object-library target (corpus-only compile gate).
+- `Tow2Corpus` compiled 569/569 build steps; 568 objects (567 units + registry).
+  Only benign `D9025` warnings (`/Ob2` overridden by `/Ob0`).
+- Pinned the framework diff:
+  `profiles/tow-2/progress/framework-tow1-bringup.patch`
+  SHA-256 `147cd0c97d66be8e113f33ccf0949e075968b272f9a7688513895abcc68d7548`
+  at HEAD `2c2aadc`.
+
+**Phase A gate: passed.** The corpus exists, is reproducible, and compiles.
+
+Next: Phase B — add `profiles/tow-2/host/main.cpp` (load/relocate, module/gp,
+register generated units) and a minimal HLE scaffold, then reach first dispatch.
+
+## 11. Phase B result — complete
+
+Date: 2026-11-06
+
+- Added `profiles/tow-2/host/main.cpp` (load/relocate, module/gp, arena, module
+  stack, generated-unit registration) and `tow2_hle.{h,cpp}`.
+- Added the `Tow2Corpus` object library to `Tow2Native`, so generated units are
+  compiled once and reused.
+- `Tow2Native.exe` builds and reaches **first dispatch**:
+  - entry `0x08804124`, module `TOW2_ALFASYSTEM`, gp `0x08CB5FA0`
+  - arena `0x08D15000`, 222,433 functions registered
+  - relocations 213,047 (0 invalid/unsupported)
+- Boot-triage chain observed so far:
+  1. `SysMemUserForUser::0xEBD5C3E6` — `sceKernelSetCompiledSdkVersion395`
+     (implemented, returns 0)
+  2. `SysMemUserForUser::0xF77D77CB` — `sceKernelSetCompilerVersion`
+     (implemented, returns 0)
+  3. `ThreadManForUser::0x446D8DE6` — `sceKernelCreateThread` — **next blocker**
+
+**Phase B gate: passed.** Guest code executes; the first missing import is a
+thread contract, not a missing generated function.
+
+Next: Phase C — thread scheduler (create/start/exit/delay/wait, stacks,
+contexts) and partition memory, adapted from the tow-1 reference.
+
+## 12. Phase C result — complete
+
+Date: 2026-11-06
+
+- Extracted the English ISO into `profiles/tow-2/game/root`:
+  10,816 files / 794.6 MB (`PSP_GAME`, `UMD_DATA.BIN`, USRDIR data).
+- Ported the scheduler and kernel objects into `tow2_hle.cpp`:
+  - threads: create/start/exit/delete, stacks, contexts, priorities, delay,
+    wait-thread-end, sleep/wakeup
+  - semaphores, mutexes, event flags, mailboxes, callbacks
+  - partition memory + raw block allocator (`AllocMemoryBlock` /
+    `GetMemoryBlockAddr` / `FreeMemoryBlock`)
+  - UMD-ready, power callback, controller sampling, boot-level GE/display
+- Boot chain now reaches:
+  - `module_start` (uid 0, priority 32) → `user_main` (uid 1, priority 40)
+    → `cModuleManager` (uid 2, priority 17)
+  - `UserSbrk` partition 0x32000 @ `0x08D15000`
+  - `MainMemory` 16 MB @ `0x08D47000`
+  - `AbortCallBack`, `PowerCallBack`, `vd power callback`,
+    `SceGuSignal` event flag
+  - `sceDisplaySetMode` / `SetFrameBuf` / vblank, GE lists accepted
+- Next blocker: `ModuleMgrForUser::0x977DE386` (`sceKernelLoadModule`).
+
+**Phase C gate: passed.** Multi-threaded guest execution is stable and the
+title reaches its module manager. GE lists are accepted but **not rasterized**
+yet; that remains a later rendering phase.
+
+## 13. Phase D result — complete
+
+Date: 2026-11-06
+
+- Created `profiles/tow-2/game/tow2.iso` as a hardlink to the English ISO, so
+  raw UMD device paths resolve without duplicating the 1.06 GB image.
+- Implemented `IoFileMgrForUser`:
+  - `sceIoOpen`, `OpenAsync`, `Close`, `Read`, `ReadAsync`, `WaitAsyncCB`,
+    `Lseek`, `Getstat`, `Dopen`, `Dread`, `Dclose`, `Devctl`, `Ioctl`,
+    `Write`, `Rename`
+  - normal files use byte counts; raw `umd0:`/`umd1:` uses 2048-byte sectors
+  - paths resolve through `Runtime::translate_path` into `game/root`
+- Implemented `ModuleMgrForUser`:
+  - `sceKernelLoadModule`, `StartModule`, `StopModule`, `UnloadModule`,
+    `StopUnloadSelfModuleWithStatus`, `GetModuleId`, `GetModuleIdByAddress`
+  - observed loads: `libfont.prx`, `libfile.prx` (stubbed UIDs)
+- Added supporting boot contracts: `sceLibFont`, `sceUtility` system params +
+  non-interactive savedata, `sceSuspendForUser` power/volatile memory, and
+  silent `sceAudio` channel bookkeeping.
+- Boot now creates and runs:
+  - `FileReadingTask` (uid 4, priority 17)
+  - `cSoundMusic` / `cSoundVoice` / `cSoundEffect` (uid 5–7, priority 16)
+  - `cOnMediaStream`, `cSoundMusic`, `cSoundVoice`, `cSoundEffect` event flags
+- Next blocker: `sceSasCore::0x42778A9F` (`__sceSasInit`).
+
+**Phase D gate: passed.** File I/O and module loading are wired. The title has
+not opened an archive yet, so the I/O path is implemented but not yet exercised
+by this run; it will be on the first `sceIoOpen` of the data archives.
+
+Next: Phase E — silent/real `sceSasCore`, then title media/archive loading.
+
+## 14. Phase E (in progress) — SAS + real libfile module
+
+Date: 2026-11-06
+
+- Implemented silent `sceSasCore`:
+  - `__sceSasInit`, `__sceSasCore`, `__sceSasCoreWithMix`, grain/output-mode
+    queries, end/pause/envelope queries, and the voice/ADSR/volume setters.
+- Discovered `libfile.prx` is a **plain ELF/PRX** (only `libfont.prx` is `~SCE`).
+  It is the title's path-hash/file-index module, not a normal SDK library.
+- Generated a secondary AOT corpus for it:
+  - `profiles/tow-2/generated_libfile` (1 unit, 10 functions)
+  - generated with load base `0x08000000`, symbols prefixed `libfile_` to avoid
+    collisions with the main EBOOT corpus
+- Added `Tow2ModuleCorpus` to the profile build and linked it into `Tow2Native`.
+- `libfile.prx` is loaded/relocated at `0x08000000`; `libfile::0xD8E69C7D` now
+  trampolines into the module's real export at `base+0x10` with the module's
+  gp/stack via `Runtime::invoke_isolated_aot`.
+- Result: the file-reading path is alive; the title creates
+  `UMD_SAMPLE_IO_SEMA` and reaches `sceMpegInit`.
+
+**Next blocker:** `sceMpeg::0x682A619B` (`sceMpegInit`). The next step is the
+`sceMpeg`/`sceAtrac3plus` + FFmpeg media port (tow-1 `tow1_mpeg.cpp` /
+`tow1_atrac.cpp` as reference).
+
+## 15. Phase E — FFmpeg media decode
+
+Date: 2026-11-06
+
+- Ported `tow1_mpeg.{hpp,cpp}` and `tow1_atrac.{hpp,cpp}` to
+  `tow2_mpeg.*` / `tow2_atrac.*` (namespace `tow2`).
+- Linked the shared FFmpeg build into `Tow2Native` (auto-detected WinGet
+  LGPL build; DLLs copied next to the executable).
+- Ported the tow-1 MPEG HLE surface:
+  - `sceMpegInit`, ringbuffer construct/destruct/put/available-size,
+    `sceMpegCreate`, query stream offset/size, regist/unregist stream,
+    `malloc/free` ES buffer, `InitAu`, `GetAvcAu`, `GetAtracAu`,
+    `AvcDecode`, `AvcDecodeDetail`, `AvcDecodeStop`, `AvcDecodeMode`,
+    `AvcDecodeFlush`, `QueryAtracEsSize`, `AtracDecode`, `Delete`, `Finish`,
+    `FlushAllStream`
+  - `sceDmacMemcpy` for decoded-frame copies into VRAM
+  - `StdioForUser` stdout/stderr/stdin handles
+- Verified against the real game data:
+  - `title.pmf` opens at
+    `game/root/PSP_GAME/USRDIR/title/title.pmf`
+  - H.264 frames decode (480x272) and are written into the guest video
+    buffers; the game DMA-copies them to `0x04088000` / `0x04110000`
+  - the private Atrac stream decodes **2,042** frames and feeds 8192-byte
+    PCM buffers through `sceMpegAtracDecode`
+- The movie reaches video EOF. The post-movie loop then spins on
+  `sceMpegRingbufferAvailableSize` and `sceDisplayGetVcount`; the
+  `cSoundMusic` / `cSoundVoice` event flags still have waiters. This is the
+  same class of post-movie sound/transition blocker as tow-1.
+
+**Presentation caveat:** there is no tow-2 window/presenter yet. Frames are
+decoded and copied into VRAM, but the GE/display handlers are still boot-level
+stubs, so nothing is shown on screen.
+
+**Next:** post-movie sound/event transition + GE interpreter/presenter.
+
+## 16. Phase E — presenter + visible opening movie
+
+Date: 2026-11-06
+
+- Ported `tow1_window.{hpp,cpp}` to `tow2_window.*`:
+  - Win32 GDI window, 480x272, integer scale
+  - framebuffer formats 0/1/3 (16-bit and ABGR8888)
+  - keyboard → PSP pad mapping
+  - frame diagnostics and PPM dump support
+- Hooked `sceDisplaySetFrameBuf` to `window_present()`, and
+  `sceCtrlReadBufferPositive` to `window_buttons()`.
+- Added `window_start()` / `window_shutdown()` around `runtime.run()`.
+- Because the GE blit is still a stub, the movie buffer is presented directly
+  after `sceDmacMemcpy` when the destination is `0x04088000` / `0x04110000`
+  (512x272 ABGR8888). This is a presentation bridge, not the final GE path.
+- Verified with a real frame dump: present #374 is a recognizable 480x272
+  opening-movie frame (blue sky/ocean). The live window shows the movie.
+
+Environment knobs:
+
+```text
+PSPRECOMP_TOW2_NO_WINDOW=1
+PSPRECOMP_TOW2_SCALE=N
+PSPRECOMP_TOW2_FRAME_DIAG=1
+PSPRECOMP_TOW2_FRAME_DUMP=path.ppm
+PSPRECOMP_TOW2_FRAME_DUMP_AT=N
+PSPRECOMP_TOW2_FRAME_DUMP_ALL=1
+PSPRECOMP_TOW2_PRESS_START=1
+```
+
+Remaining blockers:
+- post-movie `cSoundMusic` / `cSoundVoice` / ringbuffer loop
+- GE interpreter for the title/menus (the direct movie present is temporary)
+
+## 17. Post-movie transition + SAS completion
+
+Date: 2026-11-06
+
+Confirmed the 500M-dispatch pre-fix run: it stayed in the `cSoundEffect`
+audio-block loop (`delay` / `audio-block` cycling) until stopped. It never
+reached the title.
+
+Fixes applied:
+
+- **Ringbuffer accounting**: `sceMpegRingbufferPut` now adds only `num`
+  packets, and `GetAvcAu` / `GetAtracAu` consume one packet each.
+- **MPEG stream-end**: `GetAvcAu` returns `SCE_MPEG_ERROR_NO_DATA`
+  (`0x80618001`) at EOF; `AvcDecode` returns
+  `SCE_MPEG_ERROR_AVC_DECODE_FATAL` (`0x80628002`). This is the non-zero
+  return the movie player needs to leave its decode loop.
+- **SAS completion signaling**:
+  - `SasState::end_flag` is cleared by `__sceSasSetKeyOn` (`0x76F01ACA`) and
+    set to `0xFFFFFFFF` after a rendered grain.
+  - `__sceSasGetEndFlag` returns it.
+  - Post-movie `sas_output` publishes `cSoundEffect` bits `0x15`.
+  - `AvcDecode` EOF publishes `cOnMediaStream` bits `0x0F`.
+
+Result:
+
+```text
+user_main    completed
+soundThread  completed
+cSoundEffect completed
+```
+
+The sound manager is no longer stuck. `cSoundMusic` / `cSoundVoice` remain
+idle waiters and are not blocking.
+
+**New blocker:** `FileReadingTask` is now running and polling
+`cOnMediaStream` with bits `0x0F`, but the flag is left at `0x10` after the
+first poll consumes the published bits. No `title.arc` open is issued yet.
+
+A gated probe (`PSPRECOMP_TOW2_FORCE_MEDIA_EVENTS`) that re-publishes the
+media event on every poll caused a **776k `sceIoOpen`/`lseek`/`close` storm**
+against `umd1:`/`tow2.iso`; that is not a fix. The real media-event/title
+request source must be modeled instead of spamming the flag.
+
+Diagnostics added (gated): `PSPRECOMP_TOW2_SOUND_DIAG` logs the post-movie
+event-flag wait/poll/signal sequence.
+
+## 18. `cOnMediaStream` handshake trace
+
+Date: 2026-11-06
+
+Exact handshake, verified from the post-movie logs and disassembly:
+
+- `FileReadingTask` (uid 4) owns the flag.
+- It sets bit `0x10` through `sceKernelSetEventFlag` at return addresses
+  `0x08A5AF40`, `0x08A5AF90`, `0x08A5B0E0`.
+- It polls bits `0x0F` through `sceKernelPollEventFlag` at
+  `0x08A5ACE4` (helper `0x08A5ACD0`), with mode `0x21` (AND + CLEAR).
+- The consumer that must publish `0x0F` is the movie/main thread. At video
+  EOF `user_main` completes (`pc=0x08A63384`), so nobody publishes `0x0F`
+  for the file task's leftover request.
+- Resetting the flag to `0x0F` once does not help: the file task re-arms
+  bit `0x10` and waits again.
+- Re-publishing `0x0F` on every poll makes the poll succeed, but triggers a
+  **776k `sceIoOpen` / `sceIoLseek` / `sceIoClose` storm** against
+  `umd1:`/`tow2.iso`. It is a probe, not a fix.
+
+**Root-cause hypothesis:** `user_main` exits after the movie instead of
+continuing into the title-loader/consumer path (or creating the thread that
+consumes the media stream). The file task is left holding a pending request.
+The next trace is the `user_main` return path after the movie player and
+whether the fatal `AvcDecode` EOF return is causing an early exit.
+
+## 19. `user_main` post-movie trace
+
+Date: 2026-11-06
+
+Call site and branching (`0x08A63000` movie wrapper):
+
+```text
+0x08A632A0  jal 0x08A638F0          ; movie player
+0x08A632A8  sw v0, 0x2C(fp)         ; result
+0x08A632B0  bne v0, 0, 0x08A632EC
+  result == 0  -> WaitThreadEnd (0x08AEDC78) -> 0x08A63358
+  result  > 0  -> WaitThreadEnd + sceMpegFlushAllStream (0x08AEE380)
+                  + clear 0x08CB1F00 -> 0x08A63358
+  result  < 0  -> direct to 0x08A63358 (bltz at 0x08A632F0)
+```
+
+All three paths converge at `0x08A63358`. From `0x08A63384` onward the
+function runs the full cleanup: `sceMpegFreeAvcEsBuf`, `UnRegistStream` x2,
+`sceMpegDelete`, `RingbufferDestruct`, `sceMpegFinish`, a final call to
+`0x08A65064`, then returns at `0x08A635AC`.
+
+**Conclusion:** the EOF return does **not** cause an immediate early exit
+inside the movie wrapper. However, the earlier `user_main` completion was
+**not** normal: it was caused by the `sceKernelDeleteThread` HLE bug
+documented in §20. The **negative** EOF codes also take the `result < 0`
+path, which skips `WaitThreadEnd` and the `FlushAllStream` / `0x08CB1F00`
+status clear. That leaves the media/file consumer state inconsistent
+(`FileReadingTask` still waiting on `cOnMediaStream` 0x0F).
+
+See §20 for the fixed delete-thread behavior and the media experiments.
+
+## 20. `sceKernelDeleteThread` fix and media EOF experiments
+
+Date: 2026-11-06
+
+### Fixed: `sceKernelDeleteThread` completed the caller
+
+The HLE for `0x9FA03CD3` called `complete_current_thread`. The movie cleanup
+deletes the sound thread at `0x08A63390` (`a0 = [0x08CB1F0C]`, uid 9), so the
+old HLE completed `user_main` at `0x08A63384` instead of deleting uid 9.
+`delete_thread()` now removes the target uid, removes it from the ready
+queue, serves its end-waiters, and returns 0. If the target is the current
+thread, the old exit behavior is preserved.
+
+Verified:
+
+```text
+[tow2] delete thread uid=9 name="soundThread"
+```
+
+`user_main` resumes after the delete and reaches the end of the movie task;
+it then sleeps in the idle loop at `0x08A70420`. `title.pmf` is opened, but
+no `title.arc` yet.
+
+### Confirmed movie result
+
+Probe at the wrapper's delete call:
+
+```text
+[tow2] movie result=0x80628002 fp=0x09FEF8D0
+```
+
+That is the negative `AvcDecode` EOF code. The wrapper takes the
+`result < 0` path and skips both `WaitThreadEnd` and
+`FlushAllStream` / the `0x08CB1F00` clear. The file task's final `0x10`
+request is never consumed.
+
+### Media experiments (all negative)
+
+- **One-shot `0x0F` acknowledgement** when the file task arms `0x10` after
+  host EOF: the poll succeeds, then the file task arms `0x10` again and
+  polls forever.
+- **Drain mode** (ack every armed `0x10`): 75,000+ acks in 30M dispatches,
+  still no title load. Draining is not the fix.
+- **Positive EOF** (`AvcDecode` returns 1): the movie player retry-spins at
+  `0x08A72430`; the `> 0` wrapper path is not the EOF path. Reverted.
+
+### Next test
+
+Trace the caller of the movie wrapper `0x08A63000` (movie task around
+`0x08A62A78`) and the guest cleanup/cancel path for the `FileReadingTask`'s
+media request. The worker must be cancelled/stopped when the movie ends;
+neither acking nor flushing stops it. Identify the request object's stop
+signal (or the caller's error-path handling) and model it in the HLE.
+
+## 21. Movie-end producer trace (2026-11-07)
+
+- The movie task entry is `0x08A62D18`; `PSPRECOMP_TRACE_PC` shows
+  `ra=0x08A4C848` and `a0` = `disc0:/PSP_GAME/USRDIR/title/title.pmf`.
+  The caller is a one-shot wrapper at `0x08A4C818`; it calls the movie task
+  and returns without cancelling the file worker.
+- The same entry constructs the MPEG ring buffer:
+  `ring=0x09FEF90C packets=960 data=0x09428380 cb=0x08A62C20 arg=0x09FEFA14`.
+  `arg` is the movie task's `fp+0x144` stream object. `0x08A62C20` is a
+  copy/read helper, not the file-task stop.
+- The file worker's stream object is `0x08D4F364`: `+0x10=0x501`
+  (`cOnMediaStream`), `+0x14=0x80020323`, other fields zero.
+- Only three guest `cOnMediaStream` sets occur in the whole run: `0x10` at
+  `ra=0x08A5B0E0`, `0x08A5AF40`, `0x08A5AF90`, all in `FileReadingTask`.
+  No guest code ever publishes `0x0F`.
+- At host video EOF: `packets=960 read=2854 written=6688 used=0`. The worker
+  has already written the whole file; the final `0x10` is a completion
+  request, not a missing packet.
+- Ack experiments are falsified: one-shot `0x0F` is consumed and the worker
+  re-arms; per-frame/per-consume `0x0F` does not stop it; drain mode reaches
+  75k+ acks and loops. The HLE is bypassing the guest ring-buffer/read-pointer
+  protocol, so the worker never reaches EOF cleanly.
+- Next test: PPSSPP A/B at the movie end (`0x08A5AEC0`/`0x08A5ACE4`,
+  `0x08A62C20`, `0x08D4F364`) to capture the real `0x0F` producer, callback
+  arguments, and worker stop condition. Then model that state in the HLE.
+
+## 22. PPSSPP tow-2 A/B — real movie contract (2026-11-07)
+
+PPSSPP `ULJS00175` v1.01, debugger port `52814`, instance 2.
+
+Real movie result at the cleanup breakpoint `0x08A63384`:
+
+```text
+[fp+0x2C]  = 0x00000000
+[fp+0x30]  = 0x00010000
+[fp+0x164] = 0x08F0E800
+```
+
+This is the key divergence. The native HLE returned
+`0x80628002` (`AvcDecode` fatal) from the same path. The real task ends with
+result 0 and enters the caller's post-movie path.
+
+Real media objects and flags:
+
+- `cOnMediaStream` UID is `0x121` in PPSSPP (dynamic; native HLE uses
+  `0x501`). The flag is addressed by name in the HLE, so the UID difference
+  is expected.
+- PPSSPP stream object `0x08D4F3E4` (native `0x08D4F364 + 0x80`):
+  `+0x10 = 0x121`, `+0x14 = 0x80020323`.
+- Post-cleanup consumer publishes `0x121` bits `0x01`, `0x02`, `0x04`, and
+  `0x10`; it **never publishes `0x0F`**. The worker polls `0x0F` as a mask,
+  so the individual bits are the real acknowledgement.
+- During the movie, `0x136`/`0x08` is set 2,848 times; that is a different
+  flag (control/vblank), not the media stream.
+
+Native WIP after matching the real EOF success:
+
+- `AvcDecode` EOF returns 0 instead of `0x80628002`.
+- `AtracPlayer::at_end()` added; `GetAtracAu` returns `0x80618001` when video
+  EOF or PCM exhausted.
+- 60M and 120M runs now stop at `0x08A63B54` in the movie player, with
+  `cOnMediaStream = 0x0F` and `FileReadingTask` delayed. The file-worker
+  stall is gone; the movie player still spins in its AU-fetch loop.
+
+Next test: capture the real `GetAvcAu`/`GetAtracAu` return at the end
+(`0x08A63B54` after GetAvcAu, `0x08A63B10` after GetAtracAu) and make the
+guest-side `GetAvcAu` return `NO_DATA` at the true guest stream end.
+
+A/B scripts: `profiles/tow-2/progress/ppsspp_tow2_ab.mjs` and
+`ppsspp_tow2_result.mjs`.
+
+### AU-return A/B result
+
+PPSSPP capture at the movie-player AU return sites:
+
+```text
+0x08A63B54 (after sceMpegGetAvcAu): last returns all 0x00000000
+0x08A63B10 (after sceMpegGetAtracAu): last returns 0x00000000 / 0x00000001
+```
+
+Neither returns `NO_DATA` (`0x80618001`) at the end. The native `used == 0`,
+host-EOF, and PMF-completion AU gates were therefore wrong and have been
+reverted. The verified `AvcDecode` EOF return `0` is kept.
+
+Current native state after the revert:
+
+```text
+60M: stop at 0x08A63B54
+user_main: running at 0x08AEE260
+FileReadingTask: delayed at 0x08A59768
+```
+
+The old file-worker `cOnMediaStream` 0x10 polling stall is gone. The remaining
+divergence is in the movie-player state machine/exit. Next test: capture the
+`0x08A72550` return at `0x08A63BB8` and the movie-player counters
+(`fp+0x18`, `fp+0x1C`, `fp+0x30`) in PPSSPP at the real cleanup, then compare
+with the native loop.
+
+## 23. 500M/520M stop-state diagnosis (2026-11-07)
+
+`PSPRECOMP_TOW2_MOVIE_STOP=1` reports:
+
+```text
+video_eof=1 decoded_frames=2847 vcount=6434
+fp+0x18=0x00D10000 +0x1C=0x00001921 +0x30=0x00D06000 +0x34=0
+ring: packets=960 read=2854 written=6688 used=0
+```
+
+PPSSPP at the real exit path `0x08A63BB8`:
+
+```text
+v0=0
+fp+0x18=0x00D06000 +0x1C=0x00001977 +0x30=0x00D06000 +0x34=1
+```
+
+The movie player copies `fp+0` to `fp+0x34` at `0x08A63A04`. State `1` is
+the exit state; the transition at `0x08A63A44` requires
+`fp+0x18 == fp+0x30`.
+
+Native: `fp+0x18 - fp+0x30 = 0xA000` (20 packets).
+PPSSPP: equality.
+
+The worker wrote 6688 ring-buffer packets, but `title.pmf` is 6669 packets —
+19 extra. That matches the ~20-packet overshoot. The equality never fires,
+the movie player never enters state 1 / sets `+0x34=1`, and the AU-fetch/
+vblank loop continues.
+
+Next test: align or cap the ring-buffer packet accounting to the PMF packet
+count (exclude the 19 extra packets), or correct the guest `fp+0x18` end
+increment. Then rerun 500M and expect state 1, `[fp+0x2C]=0`, the post-movie
+consumer bits, and `title.arc`.
+
+## 24. PMF Put cap — movie end fixed (2026-11-07)
+
+Implemented in `sceMpegRingbufferPut`:
+
+- cumulative ring-buffer writes cap at
+  `g_pmf_packet_count - 1` (the first 2048-byte PMF packet is the PSMF header);
+- `sceMpegRingbufferPut` returns the actual remaining count;
+- `g_pmf_packet_count` is set from the `title.pmf` file size at open.
+
+500M result:
+
+```text
+[tow2] movie result=0x00000000 fp=0x09FEF8D0
+```
+
+The movie task returns **0**, matching PPSSPP. The movie-player counters are
+equal (`+18=+30=0xD06000`), state 1/cleanup is reached, and the old
+`FileReadingTask` stall is gone.
+
+600M stop:
+
+```text
+Runtime stopped: dispatch limit at 0x08AC0C40
+uid=1 user_main     sleeping at 0x08A70420
+uid=4 FileReadingTask delayed
+uid=7 cSoundEffect  running at 0x08ABDDD8
+cOnMediaStream pattern=0
+cSoundEffect pattern=0
+```
+
+No `title.arc` yet. The post-movie/title transition is the active work.
+
+Next test: extend the post-movie run and inspect `cSoundEffect`/SAS completion.
+The silent SAS completion signal is gated on `g_mpeg_video_eof`; after movie
+cleanup that flag is reset, so title sound effects may never publish
+`cSoundEffect` completion. Test signaling `cSoundEffect` 0x15 unconditionally
+after a grain, or identify the post-movie title requester.
+
+## 25. Post-movie title blocker (2026-11-07)
+
+SAS completion was made unconditional after a grain. `cSoundEffect` now
+completes, and the 600M/700M stop is:
+
+```text
+Runtime stopped: dispatch limit at 0x08A59638
+user_main     sleeping at 0x08A70420
+FileReadingTask running at 0x08A59768
+cSoundEffect  completed
+cOnMediaStream pattern=0
+```
+
+No `title.arc` yet.
+
+PPSSPP at the movie end has the same task state:
+`[0x08D0317C] = 0x040CC000`, `[0x08D03198] = 0`.
+
+The early task path is `0x08804A64`. The title state is `0x08A4B118`; the
+title-thread creator is `0x08A4B168` (calls `0x08AA94F0`, which creates a
+thread). Its callers include `0x088138D8`, `0x08813ED0`, `0x08813F98`, and
+`0x0898BF48`. None are reached in the native run.
+
+Next test: trace/count the title callers and identify the missing module/task
+request that should create the title thread and open `title.arc`. PPSSPP
+breakpoints on `sceIoOpen`/the file helper destabilize the debugger socket;
+use the stable movie/task breakpoints or static traces.
+
+### Counted-PC result
+
+600M with `PSPRECOMP_COUNT_PC`:
+
+```text
+0x08A4B118 (title update)          750
+0x08A4B0FC (title load helper)       0
+0x08A4B168 (title thread creator)    0
+0x08813874 (title state)             0
+0x08813F00 (title state)             0
+0x08A4C818 (movie wrapper)          748
+0x08804A64 (task loop)                1
+```
+
+The title update runs 750 times but returns early on its `+0x4F68` flag. The
+title state `0x08813874` is called from `0x08970AE8` (unit 0182); it and the
+title-thread creator never run. The missing request is upstream of
+`0x08970A00`.
+
+Next: count/trace `0x08970000`/`0x08970A00` and its caller, identify the
+post-movie task/module request, then rerun for `title.arc`.
+
+### Title trigger result
+
+- `[0x08D14F10] = 0x08D51A70` is the title object.
+- At movie cleanup the trigger clears `[obj+0x4F68]`, invokes the title load
+  helper `0x08A4B0FC` (`ok=1`), then starts a native trampoline thread into
+  the title task `0x08970000` with that object.
+- The title task runs and calls `0x08A4B168`; the title renderer child is
+  created as uid 10.
+- The child crashes:
+
+```text
+Guest memory access outside PSP RAM/EDRAM at 0x00000010
+recomp_unit_0313 pc=0x08A76EE8 a0=0x00000005 s0=0x08DA1A70
+ra=0x08A5FBC0
+```
+
+The title state is reached, but the title renderer child gets `a0=5` and
+dereferences it as a pointer. `title.arc` is still not opened.
+
+- Trigger gate: `PSPRECOMP_TOW2_TITLE_TRIGGER` (diagnostic only, not a fix).
+- Next test: inspect `0x08A76EE8` and the title object/task argument contract
+  (`a0=5` vs the object at `0x08DA1A70`), fix the child argument/state, then
+  rerun until `title.arc` opens.
