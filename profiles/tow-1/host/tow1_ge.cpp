@@ -7,6 +7,7 @@
 #include <array>
 #include <cstdint>
 #include <cstdlib>
+#include <deque>
 #include <iomanip>
 #include <iostream>
 #include <string>
@@ -47,6 +48,16 @@ struct GeState {
 };
 
 GeState g_ge;
+
+struct PendingGeList {
+    std::uint32_t id{};
+    std::uint32_t list{};
+    std::uint32_t stall{};
+};
+
+std::deque<PendingGeList> g_pending_ge_lists;
+std::uint32_t g_next_ge_list_id = 1u;
+
 std::uint32_t g_framebuffer{};
 std::uint32_t g_framebuffer_stride{};
 std::uint32_t g_framebuffer_format{};
@@ -93,6 +104,18 @@ void trace_sublist(psprecomp::GuestMemory &memory, const char *kind,
         if (!memory.contains(at, 4u)) break;
         std::cerr << " " << psprecomp::hex32(memory.load32(at));
     }
+    std::uint32_t terminator = 0u;
+    for (std::uint32_t index = 0u; index < 4096u; ++index) {
+        const std::uint32_t at = target + index * 4u;
+        if (!memory.contains(at, 4u)) break;
+        const std::uint32_t op = memory.load32(at) >> 24u;
+        if (op == 0x0Bu || op == 0x0Cu || op == 0x0Fu) {
+            terminator = index * 4u;
+            break;
+        }
+    }
+    if (terminator != 0u) std::cerr << " term+" << terminator;
+    else std::cerr << " term=none";
     std::cerr << "\n";
 }
 
@@ -319,16 +342,43 @@ bool run_list(psprecomp::Runtime &runtime, std::uint32_t list, std::uint32_t sta
 
 void ge_reset() {
     g_ge = GeState{};
+    g_pending_ge_lists.clear();
     vcs::reset_ge_transform_state(g_ge.transform);
     g_framebuffer = 0u;
     g_framebuffer_stride = 0u;
     g_framebuffer_format = 0u;
 }
 
-void ge_enqueue(psprecomp::Runtime &runtime, std::uint32_t list,
-                std::uint32_t stall, std::uint32_t callback) {
-    (void)callback;
-    if (list == 0u) return;
+void trace_ge_list_meta(psprecomp::GuestMemory &memory, std::uint32_t list,
+                        std::uint32_t stall) {
+    if (std::getenv("PSPRECOMP_TOW1_GE_STALL_DIAG") == nullptr) return;
+    static std::uint32_t logged = 0u;
+    if (logged++ >= 24u) return;
+    std::cerr << "[tow1-ge-meta] list=" << psprecomp::hex32(list)
+              << " stall=" << psprecomp::hex32(stall);
+    if (stall != 0u && memory.contains(stall, 4u)) {
+        std::cerr << " stall_word=" << psprecomp::hex32(memory.load32(stall));
+    }
+    std::cerr << " first=";
+    std::uint32_t terminator = 0u;
+    for (std::uint32_t index = 0u; index < 4096u; ++index) {
+        const std::uint32_t at = list + index * 4u;
+        if (!memory.contains(at, 4u)) break;
+        const std::uint32_t word = memory.load32(at);
+        const std::uint32_t op = word >> 24u;
+        if (op == 0x0Bu || op == 0x0Cu || op == 0x0Fu) {
+            terminator = index * 4u;
+            std::cerr << "term+" << terminator << "="
+                      << psprecomp::hex32(word);
+            break;
+        }
+    }
+    if (terminator == 0u) std::cerr << "none";
+    std::cerr << "\n";
+}
+
+void execute_ge_list(psprecomp::Runtime &runtime, std::uint32_t list,
+                     std::uint32_t stall) {
     const std::uint64_t prims_before = g_prim_count;
     const std::uint64_t pixels_before = g_pixels_written;
     const std::uint64_t triangles_before = g_triangles;
@@ -347,8 +397,68 @@ void ge_enqueue(psprecomp::Runtime &runtime, std::uint32_t list,
     }
 }
 
+std::uint32_t ge_enqueue(psprecomp::Runtime &runtime, std::uint32_t list,
+                         std::uint32_t stall, std::uint32_t callback) {
+    (void)callback;
+    if (list == 0u) return 0u;
+    trace_ge_list_meta(runtime.memory(), list, stall);
+    const std::uint32_t id = g_next_ge_list_id++;
+    if (stall != 0u) {
+        g_pending_ge_lists.push_back(PendingGeList{id, list, stall});
+        return id;
+    }
+    execute_ge_list(runtime, list, stall);
+    return id;
+}
+
+std::uint32_t ge_enqueue_head(psprecomp::Runtime &runtime, std::uint32_t list,
+                              std::uint32_t stall, std::uint32_t callback) {
+    (void)callback;
+    if (list == 0u) return 0u;
+    trace_ge_list_meta(runtime.memory(), list, stall);
+    const std::uint32_t id = g_next_ge_list_id++;
+    if (stall != 0u) {
+        g_pending_ge_lists.push_front(PendingGeList{id, list, stall});
+        return id;
+    }
+    execute_ge_list(runtime, list, stall);
+    return id;
+}
+
+void ge_update_stall(std::uint32_t id, std::uint32_t stall) {
+    for (PendingGeList &pending : g_pending_ge_lists) {
+        if (pending.id == id) {
+            pending.stall = stall;
+            break;
+        }
+    }
+}
+
+void ge_sync(psprecomp::Runtime &runtime, std::uint32_t id) {
+    for (auto iterator = g_pending_ge_lists.begin();
+         iterator != g_pending_ge_lists.end();) {
+        if (id == 0u || iterator->id == id) {
+            execute_ge_list(runtime, iterator->list, iterator->stall);
+            iterator = g_pending_ge_lists.erase(iterator);
+        } else {
+            ++iterator;
+        }
+    }
+}
+
+void ge_draw_sync(psprecomp::Runtime &runtime) {
+    while (!g_pending_ge_lists.empty()) {
+        const PendingGeList pending = g_pending_ge_lists.front();
+        g_pending_ge_lists.pop_front();
+        execute_ge_list(runtime, pending.list, pending.stall);
+    }
+}
+
 void ge_set_framebuffer(psprecomp::Runtime &runtime, std::uint32_t address,
                         std::uint32_t stride, std::uint32_t format) {
+    // Some guest paths enqueue with a stall address and present without an
+    // explicit list sync.  Draw any remaining queued work before the present.
+    ge_draw_sync(runtime);
     g_framebuffer = address;
     g_framebuffer_stride = stride;
     g_framebuffer_format = format;

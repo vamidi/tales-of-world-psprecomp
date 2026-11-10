@@ -3984,21 +3984,35 @@ void register_hle(psprecomp::Runtime &runtime, std::uint32_t user_arena_start) {
     runtime.register_hle("sceGe_user", 0xAB49E76Au, // sceGeListEnQueue
         [](psprecomp::Runtime &rt, psprecomp::AllegrexContext &ctx) {
             dump_ge_list(rt, ctx.gpr[4], ctx.gpr[5], ctx.gpr[6], "enqueue");
-            ge_enqueue(rt, ctx.gpr[4], ctx.gpr[5], ctx.gpr[6]);
-            ctx.set_gpr(2, 1u);
+            ctx.set_gpr(2, ge_enqueue(rt, ctx.gpr[4], ctx.gpr[5], ctx.gpr[6]));
         });
     runtime.register_hle("sceGe_user", 0x1C0D95A6u, // sceGeListEnQueueHead
         [](psprecomp::Runtime &rt, psprecomp::AllegrexContext &ctx) {
             dump_ge_list(rt, ctx.gpr[4], ctx.gpr[5], ctx.gpr[6], "enqueue-head");
-            ge_enqueue(rt, ctx.gpr[4], ctx.gpr[5], ctx.gpr[6]);
-            ctx.set_gpr(2, 1u);
+            ctx.set_gpr(2, ge_enqueue_head(rt, ctx.gpr[4], ctx.gpr[5], ctx.gpr[6]));
         });
     runtime.register_hle("sceGe_user", 0x03444EB4u, // sceGeListSync
-        [](psprecomp::Runtime &, psprecomp::AllegrexContext &ctx) { ctx.set_gpr(2, 0u); });
+        [](psprecomp::Runtime &rt, psprecomp::AllegrexContext &ctx) {
+            ge_sync(rt, ctx.gpr[4]);
+            ctx.set_gpr(2, 0u);
+        });
     runtime.register_hle("sceGe_user", 0xB287BD61u, // sceGeDrawSync
-        [](psprecomp::Runtime &, psprecomp::AllegrexContext &ctx) { ctx.set_gpr(2, 0u); });
+        [](psprecomp::Runtime &rt, psprecomp::AllegrexContext &ctx) {
+            ge_draw_sync(rt);
+            ctx.set_gpr(2, 0u);
+        });
     runtime.register_hle("sceGe_user", 0xE0D68148u, // sceGeListUpdateStallAddr
-        [](psprecomp::Runtime &, psprecomp::AllegrexContext &ctx) { ctx.set_gpr(2, 0u); });
+        [](psprecomp::Runtime &, psprecomp::AllegrexContext &ctx) {
+            if (std::getenv("PSPRECOMP_TOW1_GE_STALL_DIAG") != nullptr) {
+                static std::uint32_t logged = 0u;
+                if (logged++ < 24u) {
+                    std::cerr << "[tow1-ge-stall] id=" << ctx.gpr[4]
+                              << " stall=" << psprecomp::hex32(ctx.gpr[5]) << "\n";
+                }
+            }
+            ge_update_stall(ctx.gpr[4], ctx.gpr[5]);
+            ctx.set_gpr(2, 0u);
+        });
     runtime.register_hle("sceGe_user", 0xA4FC06A4u, // sceGeSetCallback
         [](psprecomp::Runtime &, psprecomp::AllegrexContext &ctx) { ctx.set_gpr(2, 0u); });
     runtime.register_hle("sceGe_user", 0x05DB22CEu, // sceGeUnsetCallback

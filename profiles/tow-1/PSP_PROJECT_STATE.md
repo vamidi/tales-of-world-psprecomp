@@ -91,10 +91,24 @@ Last verified result:
   reuse/clear-time artifact, not an initially empty sublist.
 - The empty-list guard was therefore removed; it did not address the real
   lifecycle problem.
-- Immediate next evidence: log the `stall` argument and the first
-  END/RET/FINISH offset in the sublist; then model `sceGeListEnqueue` /
-  `sceGeListUpdateStallAddr` instead of executing the incomplete list
-  synchronously.
+- Stall logging showed the real contract:
+  - `0x48E0F740` is enqueued with `stall = 0x48E0F740` (start).
+  - The guest immediately updates it to `0x48E0F78C` / `0x48E0F794`
+    (past the `FINISH` at `+0x4C`).
+  - The root list has its own `FINISH` at `+76`; the sublists are the
+    long-running part.
+- GE enqueue now follows the async lifecycle:
+  - `sceGeListEnqueue` returns a real list id.
+  - Lists with a non-zero stall are queued, not executed immediately.
+  - `sceGeListUpdateStallAddr` updates the pending stall.
+  - `sceGeListSync` and `sceGeDrawSync` execute queued lists.
+  - `sceDisplaySetFrameBuf` flushes any remaining queue before presenting.
+- Verification:
+  - 20M-dispatch run has **zero** `list ... exceeded the command limit`
+    warnings.
+  - A title-boot frame at 5000 renders the Bandai Namco Games logo.
+  - Post-OSK frame capture with GE enabled is still slow; use the queue
+    diagnostics next rather than treating the absence of a frame as a hang.
 - Immediate diagnostic knobs: `PSPRECOMP_TOW1_OSK_DIAG=1`,
   `PSPRECOMP_TOW1_GE_COMMAND_LIMIT=N`, `PSPRECOMP_TOW1_GE_DISABLE=1`,
   `PSPRECOMP_TOW1_GE_SUBLIST_TRACE=1`, `PSPRECOMP_TOW1_GE_BAD_LIST_DUMP=1`,
