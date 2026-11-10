@@ -76,15 +76,29 @@ Last verified result:
 - Observation: OSK completes and frame 15500 is reachable with GE disabled,
   but the GE-enabled post-OSK run does not produce a clean frame.
 - Layer: host GE command-list processing; not the OSK HLE contract.
-- Hypothesis: one post-OSK display list is malformed or uses a jump/call form
-  the interpreter does not terminate, so it hits the command limit.
-- Prediction if true: dumping the first words of the offending list and fixing
-  its command/offset handling makes the post-OSK screen render.
-- Evidence: `[tow1-ge] list ... exceeded the command limit` recurs with GE
-  enabled; the logic-only path reaches the same frame with GE disabled.
+- Hypothesis: the GE list is submitted before its sublist is fully built, or
+  the list's stall/update contract is not modeled; the interpreter therefore
+  walks reused/cleared memory and hits the command limit.
+- Prediction if true: `0x084A0000` is nonzero at the first CALL, then becomes
+  zero later when the guest reuses the buffer; adding stall handling or
+  deferring execution should prevent the walk.
+- Evidence: `PSPRECOMP_TOW1_GE_SUBLIST_TRACE=1` at 20M shows:
+  - `[tow1-ge-sub] 084A0000 became nonzero at list=0x48E0F740`
+  - `call ... target=0x084A0000 zero=0 0x55FFFFFF 0x580000FF ...`
+  - subsequent calls to `0x084A0000` and `0x084A02F0` also have valid first
+    words.
+  The failing warning dump later shows `0x084A0000` as zeros, so it is a
+  reuse/clear-time artifact, not an initially empty sublist.
+- The empty-list guard was therefore removed; it did not address the real
+  lifecycle problem.
+- Immediate next evidence: log the `stall` argument and the first
+  END/RET/FINISH offset in the sublist; then model `sceGeListEnqueue` /
+  `sceGeListUpdateStallAddr` instead of executing the incomplete list
+  synchronously.
 - Immediate diagnostic knobs: `PSPRECOMP_TOW1_OSK_DIAG=1`,
   `PSPRECOMP_TOW1_GE_COMMAND_LIMIT=N`, `PSPRECOMP_TOW1_GE_DISABLE=1`,
-  `PSPRECOMP_TOW1_GE_BAD_LIST_DUMP=1`, `PSPRECOMP_TOW1_LIBFONT_DIAG=1`.
+  `PSPRECOMP_TOW1_GE_SUBLIST_TRACE=1`, `PSPRECOMP_TOW1_GE_BAD_LIST_DUMP=1`,
+  `PSPRECOMP_TOW1_LIBFONT_DIAG=1`.
 
 ## HLE surface
 

@@ -75,9 +75,44 @@ std::uint32_t relative_address(std::uint32_t data) {
     return ge_guest_address((g_ge.offset_address + base_extended) & 0x0FFFFFFFu);
 }
 
+bool ge_word_nonzero(psprecomp::GuestMemory &memory, std::uint32_t address) {
+    return memory.contains(address, 4u) && memory.load32(address) != 0u;
+}
+
+void trace_sublist(psprecomp::GuestMemory &memory, const char *kind,
+                   std::uint32_t list, std::uint32_t target) {
+    if (std::getenv("PSPRECOMP_TOW1_GE_SUBLIST_TRACE") == nullptr) return;
+    static std::uint32_t calls = 0u;
+    if (calls++ >= 24u) return;
+    std::cerr << "[tow1-ge-sub] " << kind
+              << " list=" << psprecomp::hex32(list)
+              << " target=" << psprecomp::hex32(target)
+              << " zero=" << (ge_word_nonzero(memory, target) ? 0 : 1);
+    for (std::uint32_t index = 0u; index < 8u; ++index) {
+        const std::uint32_t at = target + index * 4u;
+        if (!memory.contains(at, 4u)) break;
+        std::cerr << " " << psprecomp::hex32(memory.load32(at));
+    }
+    std::cerr << "\n";
+}
+
 bool run_list(psprecomp::Runtime &runtime, std::uint32_t list, std::uint32_t stall) {
     if (std::getenv("PSPRECOMP_TOW1_GE_DISABLE") != nullptr) return true;
     auto &memory = runtime.memory();
+    if (std::getenv("PSPRECOMP_TOW1_GE_SUBLIST_TRACE") != nullptr) {
+        static bool saw_nonzero = false;
+        if (!saw_nonzero && ge_word_nonzero(memory, 0x084A0000u)) {
+            saw_nonzero = true;
+            std::cerr << "[tow1-ge-sub] 084A0000 became nonzero at list="
+                      << psprecomp::hex32(list) << "\n";
+            for (std::uint32_t index = 0u; index < 8u; ++index) {
+                const std::uint32_t at = 0x084A0000u + index * 4u;
+                if (!memory.contains(at, 4u)) break;
+                std::cerr << "  084A+" << index * 4u << "="
+                          << psprecomp::hex32(memory.load32(at)) << "\n";
+            }
+        }
+    }
     if (list == 0u || !memory.contains(list, 4u)) return false;
 
     // Empty command buffers are submitted during startup; they contain no END
@@ -207,19 +242,25 @@ bool run_list(psprecomp::Runtime &runtime, std::uint32_t list, std::uint32_t sta
             }
             break;
         }
-        case kGeCommandJump:
-            next_pc = relative_address(data & 0x00FFFFFCu);
+        case kGeCommandJump: {
+            const std::uint32_t target = relative_address(data & 0x00FFFFFCu);
+            trace_sublist(memory, "jump", start, target);
+            next_pc = target;
             break;
+        }
         case kGeCommandBoundingBoxJump:
             if (!g_ge.bounding_box_visible)
                 next_pc = relative_address(data & 0x00FFFFFCu);
             break;
-        case kGeCommandCall:
+        case kGeCommandCall: {
+            const std::uint32_t target = relative_address(data & 0x00FFFFFCu);
+            trace_sublist(memory, "call", start, target);
             if (g_ge.stack.size() < 64u) {
                 g_ge.stack.push_back(StackEntry{next_pc, g_ge.offset_address});
-                next_pc = relative_address(data & 0x00FFFFFCu);
+                next_pc = target;
             }
             break;
+        }
         case kGeCommandReturn:
             if (g_ge.stack.empty()) {
                 return true;
