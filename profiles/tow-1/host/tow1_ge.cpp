@@ -76,6 +76,7 @@ std::uint32_t relative_address(std::uint32_t data) {
 }
 
 bool run_list(psprecomp::Runtime &runtime, std::uint32_t list, std::uint32_t stall) {
+    if (std::getenv("PSPRECOMP_TOW1_GE_DISABLE") != nullptr) return true;
     auto &memory = runtime.memory();
     if (list == 0u || !memory.contains(list, 4u)) return false;
 
@@ -106,7 +107,12 @@ bool run_list(psprecomp::Runtime &runtime, std::uint32_t list, std::uint32_t sta
         }
     }
 
-    for (std::uint32_t step = 0u; step < 100000u; ++step) {
+    static const std::uint32_t command_limit = [] {
+        const char *text = std::getenv("PSPRECOMP_TOW1_GE_COMMAND_LIMIT");
+        return text != nullptr ? static_cast<std::uint32_t>(
+            std::strtoul(text, nullptr, 0)) : 100000u;
+    }();
+    for (std::uint32_t step = 0u; step < command_limit; ++step) {
         ++g_commands_executed;
         if (!memory.contains(pc, 4u)) {
             std::cerr << "[tow1-ge] list " << psprecomp::hex32(start)
@@ -245,6 +251,26 @@ bool run_list(psprecomp::Runtime &runtime, std::uint32_t list, std::uint32_t sta
 
     std::cerr << "[tow1-ge] list " << psprecomp::hex32(start)
               << " exceeded the command limit\n";
+    if (std::getenv("PSPRECOMP_TOW1_GE_BAD_LIST_DUMP") != nullptr) {
+        static std::uint32_t dumped = 0u;
+        if (dumped < 8u) {
+            ++dumped;
+            for (std::uint32_t index = 0u; index < 64u; ++index) {
+                const std::uint32_t at = start + index * 4u;
+                if (!memory.contains(at, 4u)) break;
+                std::cerr << "  list+" << index * 4u << "="
+                          << psprecomp::hex32(memory.load32(at)) << "\n";
+            }
+            // The title frame list CALLs this sublist.  It is the usual source
+            // of the command-limit warning; dump enough to identify its shape.
+            for (std::uint32_t index = 0u; index < 32u; ++index) {
+                const std::uint32_t at = 0x084A0000u + index * 4u;
+                if (!memory.contains(at, 4u)) break;
+                std::cerr << "  sub084A+" << index * 4u << "="
+                          << psprecomp::hex32(memory.load32(at)) << "\n";
+            }
+        }
+    }
     return false;
 }
 

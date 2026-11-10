@@ -103,6 +103,15 @@ struct PartitionTable {
 
 PartitionTable g_partitions;
 
+struct FixedPool {
+    std::uint32_t block_size{};
+    std::vector<std::uint32_t> blocks;
+    std::vector<bool> used;
+};
+
+std::unordered_map<std::int32_t, FixedPool> g_fixed_pools;
+std::int32_t g_next_fixed_pool = 0x2000;
+
 struct SemaphoreWaiter {
     std::int32_t uid{};
     std::int32_t count{};
@@ -194,6 +203,8 @@ struct SasState {
     std::int32_t max_voices{};
     std::int32_t output_mode{};
     std::int32_t sample_rate{};
+    std::uint32_t voice_mask{};
+    std::uint32_t end_mask{};
 };
 SasState g_sas;
 
@@ -246,6 +257,9 @@ std::uint32_t g_display_mode = 0u;
 std::uint32_t g_display_width = 480u;
 std::uint32_t g_display_height = 272u;
 std::int32_t g_savedata_status = 0;
+std::int32_t g_osk_status = 0;
+std::uint32_t g_osk_params = 0u;
+std::int32_t g_msgdialog_status = 0;
 
 struct MpegState {
     std::uint32_t address{};
@@ -3188,6 +3202,10 @@ void register_hle(psprecomp::Runtime &runtime, std::uint32_t user_arena_start) {
             g_sas.grain > 0 ? static_cast<std::uint32_t>(g_sas.grain) : 1024u;
         const std::uint32_t microseconds = std::max<std::uint32_t>(
             100u, (samples * 1000000u) / rate);
+        // A silent grain is one completed voice pass.  Publish the voice mask
+        // so callers waiting in __sceSasGetEndFlag make progress.
+        g_sas.end_mask = g_sas.voice_mask;
+        g_sas.voice_mask = 0u;
         delay_current_thread(rt, ctx, microseconds);
         ctx.set_gpr(2, 0u);
     };
@@ -3212,21 +3230,84 @@ void register_hle(psprecomp::Runtime &runtime, std::uint32_t user_arena_start) {
             ctx.set_gpr(2, 0u);
         });
     runtime.register_hle("sceSasCore", 0x68A46B95u, // __sceSasGetEndFlag
-        [](psprecomp::Runtime &, psprecomp::AllegrexContext &ctx) { ctx.set_gpr(2, 0u); });
+        [](psprecomp::Runtime &, psprecomp::AllegrexContext &ctx) {
+            ctx.set_gpr(2, g_sas.end_mask);
+        });
     runtime.register_hle("sceSasCore", 0x2C8E6AB3u, // __sceSasGetPauseFlag
         [](psprecomp::Runtime &, psprecomp::AllegrexContext &ctx) { ctx.set_gpr(2, 0u); });
     runtime.register_hle("sceSasCore", 0x74AE582Au, // __sceSasGetEnvelopeHeight
         [](psprecomp::Runtime &, psprecomp::AllegrexContext &ctx) { ctx.set_gpr(2, 0u); });
+    runtime.register_hle("sceSasCore", 0x76F01ACAu, // __sceSasSetKeyOn
+        [](psprecomp::Runtime &, psprecomp::AllegrexContext &ctx) {
+            const std::uint32_t voice = ctx.gpr[5] & 31u;
+            g_sas.voice_mask |= 1u << voice;
+            g_sas.end_mask &= ~(1u << voice);
+            ctx.set_gpr(2, 0u);
+        });
+    runtime.register_hle("sceSasCore", 0xA0CF2FA4u, // __sceSasSetKeyOff
+        [](psprecomp::Runtime &, psprecomp::AllegrexContext &ctx) {
+            const std::uint32_t voice = ctx.gpr[5] & 31u;
+            g_sas.voice_mask &= ~(1u << voice);
+            ctx.set_gpr(2, 0u);
+        });
     for (const std::uint32_t nid : {0x019B25EBu, 0x267A6DD2u, 0x33D4AB37u,
-                                    0x440CA7D8u, 0x5F9529F6u, 0x76F01ACAu,
+                                    0x440CA7D8u, 0x5F9529F6u,
                                     0x787D04D5u, 0x99944089u, 0x9EC3676Au,
-                                    0xA0CF2FA4u, 0xAD84D37Fu, 0xB7660A23u,
+                                    0xAD84D37Fu, 0xB7660A23u,
                                     0xCBCD4F79u, 0xD5A229C9u, 0xF983B186u}) {
         runtime.register_hle("sceSasCore", nid, // voice/ADSR/volume/pause setters
             [](psprecomp::Runtime &, psprecomp::AllegrexContext &ctx) {
                 ctx.set_gpr(2, 0u);
             });
     }
+
+    // Standalone Atrac3+ playback.  The opening movie's private stream is
+    // handled by tow1_atrac; in-game BGM/voice is optional for now, so report
+    // an exhausted stream instead of stopping on an unregistered import.
+    runtime.register_hle("sceAtrac3plus", 0x7A20E7AFu, // sceAtracSetDataAndGetID
+        [](psprecomp::Runtime &, psprecomp::AllegrexContext &ctx) {
+            if (std::getenv("PSPRECOMP_TOW1_ATRAC_DIAG") != nullptr) {
+                std::cerr << "[tow1-atrac3] set-data size=" << ctx.gpr[5] << "\n";
+            }
+            ctx.set_gpr(2, 1u);
+        });
+    runtime.register_hle("sceAtrac3plus", 0x6A8C3CD5u, // sceAtracDecodeData
+        [](psprecomp::Runtime &rt, psprecomp::AllegrexContext &ctx) {
+            const std::uint32_t output = ctx.gpr[5];
+            const std::uint32_t samples = ctx.gpr[6];
+            const std::uint32_t end = ctx.gpr[7];
+            if (output != 0u && rt.memory().contains(output, 4096u)) {
+                rt.memory().zero(output, 4096u);
+            }
+            if (samples != 0u && rt.memory().contains(samples, 4u)) {
+                rt.memory().store32(samples, 0u);
+            }
+            if (end != 0u && rt.memory().contains(end, 4u)) {
+                rt.memory().store32(end, 1u);
+            }
+            ctx.set_gpr(2, 0u);
+        });
+    runtime.register_hle("sceAtrac3plus", 0xA2BBA8BEu, // sceAtracGetSoundSample
+        [](psprecomp::Runtime &rt, psprecomp::AllegrexContext &ctx) {
+            if (ctx.gpr[5] != 0u && rt.memory().contains(ctx.gpr[5], 4u)) {
+                rt.memory().store32(ctx.gpr[5], 0u);
+            }
+            if (ctx.gpr[6] != 0u && rt.memory().contains(ctx.gpr[6], 4u)) {
+                rt.memory().store32(ctx.gpr[6], 0u);
+            }
+            if (ctx.gpr[7] != 0u && rt.memory().contains(ctx.gpr[7], 4u)) {
+                rt.memory().store32(ctx.gpr[7], 0u);
+            }
+            ctx.set_gpr(2, 0u);
+        });
+    runtime.register_hle("sceAtrac3plus", 0x868120B5u, // sceAtracSetLoopNum
+        [](psprecomp::Runtime &, psprecomp::AllegrexContext &ctx) {
+            ctx.set_gpr(2, 0u);
+        });
+    runtime.register_hle("sceAtrac3plus", 0x61EB33F5u, // sceAtracReleaseAtracID
+        [](psprecomp::Runtime &, psprecomp::AllegrexContext &ctx) {
+            ctx.set_gpr(2, 0u);
+        });
 
     runtime.register_hle("sceWlanDrv", 0x0C622081u, // sceWlanGetEtherAddr
         [](psprecomp::Runtime &rt, psprecomp::AllegrexContext &ctx) {
@@ -3252,14 +3333,71 @@ void register_hle(psprecomp::Runtime &runtime, std::uint32_t user_arena_start) {
                 return;
             }
             std::uint32_t buttons = window_buttons();
+            // Deterministic pad script: "time_us:mask[:hold_us],...".
+            // Times and masks accept decimal or 0x-prefixed values.
+            if (const char *script_text =
+                    std::getenv("PSPRECOMP_TOW1_PAD_SCRIPT");
+                script_text != nullptr && *script_text != '\0') {
+                struct PadEvent {
+                    std::uint64_t time_us{};
+                    std::uint32_t mask{};
+                    std::uint64_t hold_us{250000u};
+                };
+                static bool loaded = false;
+                static std::vector<PadEvent> events;
+                if (!loaded) {
+                    loaded = true;
+                    const char *cursor = script_text;
+                    while (*cursor != '\0') {
+                        while (*cursor == ',' || *cursor == ' ' || *cursor == '\n')
+                            ++cursor;
+                        if (*cursor == '\0') break;
+                        char *end = nullptr;
+                        const unsigned long long time_value =
+                            std::strtoull(cursor, &end, 0);
+                        if (end == cursor) break;
+                        cursor = end;
+                        if (*cursor != ':') break;
+                        ++cursor;
+                        const unsigned long long mask_value =
+                            std::strtoull(cursor, &end, 0);
+                        if (end == cursor) break;
+                        cursor = end;
+                        PadEvent event;
+                        event.time_us = time_value;
+                        event.mask = static_cast<std::uint32_t>(mask_value);
+                        if (*cursor == ':') {
+                            ++cursor;
+                            const unsigned long long hold_value =
+                                std::strtoull(cursor, &end, 0);
+                            if (end != cursor && hold_value != 0u) {
+                                event.hold_us = hold_value;
+                            }
+                            cursor = end;
+                        }
+                        events.push_back(event);
+                        while (*cursor != '\0' && *cursor != ',') ++cursor;
+                    }
+                }
+                for (const PadEvent &event : events) {
+                    if (g_scheduler.now_us >= event.time_us &&
+                        g_scheduler.now_us < event.time_us + event.hold_us) {
+                        buttons |= event.mask;
+                    }
+                }
+            }
             if (std::getenv("PSPRECOMP_TOW1_PRESS_START") != nullptr) {
                 // Do not inject input during the opening movie.  The title
                 // pointer becomes non-zero when the title state is active.
                 const bool title_active = rt.memory().load32(0x08DB61D0u) != 0u;
                 const bool start_only =
                     std::getenv("PSPRECOMP_TOW1_PRESS_START_ONLY") != nullptr;
-                const bool title_ready =
-                    g_scheduler.now_us >= 95000000u; // after the opening movie
+                std::uint64_t title_ready_us = 95000000u;
+                if (const char *ready_text =
+                        std::getenv("PSPRECOMP_TOW1_TITLE_READY_US")) {
+                    title_ready_us = std::strtoull(ready_text, nullptr, 0);
+                }
+                const bool title_ready = g_scheduler.now_us >= title_ready_us;
                 if (start_only) {
                     static bool start_seen = false;
                     static std::uint64_t start_seen_us = 0u;
@@ -3275,7 +3413,7 @@ void register_hle(psprecomp::Runtime &runtime, std::uint32_t user_arena_start) {
                         if (elapsed >= 15000000u && elapsed < 15250000u)
                             buttons |= 0x4000u; // New Game
                         if (const char *menu = std::getenv("PSPRECOMP_TOW1_MENU_BUTTON");
-                            menu != nullptr && elapsed >= 20000000u && elapsed < 80000000u &&
+                            menu != nullptr && elapsed >= 20000000u && elapsed < 600000000u &&
                             (elapsed % 5000000u) < 250000u)
                             buttons |= static_cast<std::uint32_t>(
                                 std::strtoul(menu, nullptr, 0));
@@ -3389,6 +3527,10 @@ void register_hle(psprecomp::Runtime &runtime, std::uint32_t user_arena_start) {
             ctx.set_gpr(2, 1u);
         });
     runtime.register_hle("StdioForUser", 0xA6BAB2E9u, // sceKernelStderr
+        [](psprecomp::Runtime &, psprecomp::AllegrexContext &ctx) {
+            ctx.set_gpr(2, 2u);
+        });
+    runtime.register_hle("StdioForUser", 0xF78BA90Au, // sceKernelStderr
         [](psprecomp::Runtime &, psprecomp::AllegrexContext &ctx) {
             ctx.set_gpr(2, 2u);
         });
@@ -4192,6 +4334,126 @@ void register_hle(psprecomp::Runtime &runtime, std::uint32_t user_arena_start) {
         [](psprecomp::Runtime &rt, psprecomp::AllegrexContext &ctx) {
             get_system_param_string(rt, ctx);
         });
+    // On-screen keyboard: this port has no host OSK yet.  Complete the dialog
+    // immediately with the supplied initial text (or a safe default) so name
+    // entry and character creation can continue unattended.
+    runtime.register_hle("sceUtility", 0xF6269B82u, // sceUtilityOskInitStart
+        [](psprecomp::Runtime &rt, psprecomp::AllegrexContext &ctx) {
+            g_osk_params = ctx.gpr[4];
+            g_osk_status = 2; // PSP_UTILITY_DIALOG_VISIBLE
+            if (g_osk_params != 0u && rt.memory().contains(g_osk_params, 0x40u)) {
+                rt.memory().store32(g_osk_params + 0x1Cu, 0u); // base.result
+                rt.memory().store32(g_osk_params + 0x38u, 3u); // OSK state visible
+                const std::uint32_t data = rt.memory().load32(g_osk_params + 0x34u);
+                if (data != 0u && rt.memory().contains(data, 0x34u)) {
+                    const std::uint32_t initial = rt.memory().load32(data + 32u);
+                    const std::uint32_t output = rt.memory().load32(data + 40u);
+                    const std::uint32_t limit = rt.memory().load32(data + 48u);
+                    std::uint32_t length = 0u;
+                    if (initial != 0u && rt.memory().contains(initial, 2u)) {
+                        while (length < 31u && rt.memory().contains(initial + length * 2u, 2u) &&
+                               rt.memory().load16(initial + length * 2u) != 0u) {
+                            ++length;
+                        }
+                    }
+                    if (length == 0u) {
+                        const char default_name[] = "Radiant";
+                        if (output != 0u && limit > 0u &&
+                            rt.memory().contains(output, static_cast<std::size_t>(limit) * 2u)) {
+                            const std::uint32_t count = std::min<std::uint32_t>(
+                                limit - 1u, sizeof(default_name) - 1u);
+                            for (std::uint32_t index = 0u; index < count; ++index) {
+                                rt.memory().store16(output + index * 2u,
+                                    static_cast<std::uint16_t>(default_name[index]));
+                            }
+                            rt.memory().store16(output + count * 2u, 0u);
+                            length = count;
+                        }
+                    } else if (output != 0u && limit > 0u &&
+                               rt.memory().contains(output, static_cast<std::size_t>(limit) * 2u)) {
+                        length = std::min(length, limit - 1u);
+                        for (std::uint32_t index = 0u; index < length; ++index) {
+                            rt.memory().store16(output + index * 2u,
+                                rt.memory().load16(initial + index * 2u));
+                        }
+                        rt.memory().store16(output + length * 2u, 0u);
+                    }
+                    rt.memory().store32(data + 44u, 2u); // OSK_RESULT_CHANGED
+                }
+            }
+            if (std::getenv("PSPRECOMP_TOW1_OSK_DIAG") != nullptr) {
+                std::cerr << "[tow1-osk] init params=" << psprecomp::hex32(g_osk_params)
+                          << " -> visible\n";
+            }
+            ctx.set_gpr(2, 0u);
+        });
+    runtime.register_hle("sceUtility", 0x4B85C861u, // sceUtilityOskUpdate
+        [](psprecomp::Runtime &rt, psprecomp::AllegrexContext &ctx) {
+            // The game's OSK loop handles QUIT (3) by calling ShutdownStart,
+            // then observes NONE (0).  FINISHED (4) does not advance that loop.
+            g_osk_status = 3;
+            if (g_osk_params != 0u && rt.memory().contains(g_osk_params, 0x40u)) {
+                rt.memory().store32(g_osk_params + 0x38u, 4u); // OSK state quit
+            }
+            if (std::getenv("PSPRECOMP_TOW1_OSK_DIAG") != nullptr) {
+                static std::uint32_t updates = 0u;
+                if (updates++ < 16u)
+                    std::cerr << "[tow1-osk] update -> 3 (quit)\n";
+            }
+            ctx.set_gpr(2, 0u);
+        });
+    runtime.register_hle("sceUtility", 0xF3F76017u, // sceUtilityOskGetStatus
+        [](psprecomp::Runtime &, psprecomp::AllegrexContext &ctx) {
+            if (std::getenv("PSPRECOMP_TOW1_OSK_DIAG") != nullptr) {
+                static std::uint32_t gets = 0u;
+                if (gets++ < 32u)
+                    std::cerr << "[tow1-osk] status -> "
+                              << g_osk_status << "\n";
+            }
+            ctx.set_gpr(2, static_cast<std::uint32_t>(g_osk_status));
+        });
+    runtime.register_hle("sceUtility", 0x3DFAEBA9u, // sceUtilityOskShutdownStart
+        [](psprecomp::Runtime &rt, psprecomp::AllegrexContext &ctx) {
+            if (std::getenv("PSPRECOMP_TOW1_OSK_DIAG") != nullptr)
+                std::cerr << "[tow1-osk] shutdown\n";
+            if (g_osk_params != 0u && rt.memory().contains(g_osk_params, 0x40u)) {
+                rt.memory().store32(g_osk_params + 0x38u, 5u); // OSK state finished
+            }
+            g_osk_status = 0;
+            ctx.set_gpr(2, 0u);
+        });
+
+    // Message dialogs are non-interactive here (there is no host modal).  They
+    // complete immediately so callers can advance to their normal branch.
+    runtime.register_hle("sceUtility", 0x2AD8E239u, // sceUtilityMsgDialogInitStart
+        [](psprecomp::Runtime &rt, psprecomp::AllegrexContext &ctx) {
+            g_msgdialog_status = 4; // PSP_UTILITY_DIALOG_FINISHED
+            const std::uint32_t params = ctx.gpr[4];
+            if (params != 0u && rt.memory().contains(params, 0x20u)) {
+                rt.memory().store32(params + 0x1Cu, 0u); // base.result
+            }
+            ctx.set_gpr(2, 0u);
+        });
+    runtime.register_hle("sceUtility", 0x95FC253Bu, // sceUtilityMsgDialogUpdate
+        [](psprecomp::Runtime &, psprecomp::AllegrexContext &ctx) {
+            g_msgdialog_status = 4;
+            ctx.set_gpr(2, 0u);
+        });
+    runtime.register_hle("sceUtility", 0x9A1C91D7u, // sceUtilityMsgDialogGetStatus
+        [](psprecomp::Runtime &, psprecomp::AllegrexContext &ctx) {
+            ctx.set_gpr(2, static_cast<std::uint32_t>(g_msgdialog_status));
+        });
+    runtime.register_hle("sceUtility", 0x67AF3428u, // sceUtilityMsgDialogShutdownStart
+        [](psprecomp::Runtime &, psprecomp::AllegrexContext &ctx) {
+            g_msgdialog_status = 0;
+            ctx.set_gpr(2, 0u);
+        });
+    runtime.register_hle("sceUtility", 0x4928BD96u, // sceUtilityMsgDialogAbort
+        [](psprecomp::Runtime &, psprecomp::AllegrexContext &ctx) {
+            g_msgdialog_status = 0;
+            ctx.set_gpr(2, 0u);
+        });
+
     // Savedata dialog: complete immediately. The game still polls the dialog
     // state machine, so keep a tiny status record rather than returning a
     // missing-import stop.
@@ -4335,6 +4597,95 @@ void register_hle(psprecomp::Runtime &runtime, std::uint32_t user_arena_start) {
         [](psprecomp::Runtime &rt, psprecomp::AllegrexContext &ctx) {
             delete_mutex(rt, ctx);
         });
+    runtime.register_hle("ThreadManForUser", 0xC07BB470u, // sceKernelCreateFpl
+        [](psprecomp::Runtime &rt, psprecomp::AllegrexContext &ctx) {
+            const std::uint32_t size = ctx.gpr[7];
+            const std::uint32_t blocks =
+                rt.memory().contains(ctx.gpr[29], 0x14u)
+                    ? rt.memory().load32(ctx.gpr[29] + 0x10u) : 0u;
+            if (size == 0u || blocks == 0u || blocks > 4096u) {
+                ctx.set_gpr(2, 0x800201A5u);
+                return;
+            }
+            const std::uint64_t total = static_cast<std::uint64_t>(size) * blocks;
+            const std::uint32_t address =
+                (g_partitions.next_address + 15u) & ~15u;
+            if (!rt.memory().contains(address, static_cast<std::size_t>(total)) ||
+                address + total > g_scheduler.next_stack_top) {
+                ctx.set_gpr(2, 0x80020190u);
+                return;
+            }
+            g_partitions.next_address =
+                address + static_cast<std::uint32_t>(total);
+            const std::int32_t uid = g_next_fixed_pool++;
+            FixedPool pool;
+            pool.block_size = size;
+            pool.blocks.reserve(blocks);
+            for (std::uint32_t index = 0u; index < blocks; ++index) {
+                pool.blocks.push_back(address + index * size);
+            }
+            pool.used.assign(blocks, false);
+            g_fixed_pools.emplace(uid, std::move(pool));
+            ctx.set_gpr(2, static_cast<std::uint32_t>(uid));
+        });
+    runtime.register_hle("ThreadManForUser", 0xD979E9BFu, // sceKernelAllocateFpl
+        [](psprecomp::Runtime &rt, psprecomp::AllegrexContext &ctx) {
+            const auto pool = g_fixed_pools.find(
+                static_cast<std::int32_t>(ctx.gpr[4]));
+            if (pool == g_fixed_pools.end() || ctx.gpr[5] == 0u ||
+                !rt.memory().contains(ctx.gpr[5], 4u)) {
+                ctx.set_gpr(2, 0x800201A5u);
+                return;
+            }
+            for (std::size_t index = 0u; index < pool->second.used.size(); ++index) {
+                if (!pool->second.used[index]) {
+                    pool->second.used[index] = true;
+                    rt.memory().store32(ctx.gpr[5], pool->second.blocks[index]);
+                    ctx.set_gpr(2, 0u);
+                    return;
+                }
+            }
+            ctx.set_gpr(2, 0x800201A5u);
+        });
+    runtime.register_hle("ThreadManForUser", 0x623AE665u, // sceKernelTryAllocateFpl
+        [](psprecomp::Runtime &rt, psprecomp::AllegrexContext &ctx) {
+            const auto pool = g_fixed_pools.find(
+                static_cast<std::int32_t>(ctx.gpr[4]));
+            if (pool == g_fixed_pools.end() || ctx.gpr[5] == 0u ||
+                !rt.memory().contains(ctx.gpr[5], 4u)) {
+                ctx.set_gpr(2, 0x800201A5u);
+                return;
+            }
+            for (std::size_t index = 0u; index < pool->second.used.size(); ++index) {
+                if (!pool->second.used[index]) {
+                    pool->second.used[index] = true;
+                    rt.memory().store32(ctx.gpr[5], pool->second.blocks[index]);
+                    ctx.set_gpr(2, 0u);
+                    return;
+                }
+            }
+            ctx.set_gpr(2, 0x800201A5u);
+        });
+    runtime.register_hle("ThreadManForUser", 0xF6414A71u, // sceKernelFreeFpl
+        [](psprecomp::Runtime &, psprecomp::AllegrexContext &ctx) {
+            const auto pool = g_fixed_pools.find(
+                static_cast<std::int32_t>(ctx.gpr[4]));
+            if (pool != g_fixed_pools.end()) {
+                for (std::size_t index = 0u; index < pool->second.blocks.size(); ++index) {
+                    if (pool->second.blocks[index] == ctx.gpr[5]) {
+                        pool->second.used[index] = false;
+                        break;
+                    }
+                }
+            }
+            ctx.set_gpr(2, 0u);
+        });
+    runtime.register_hle("ThreadManForUser", 0xED1410E0u, // sceKernelDeleteFpl
+        [](psprecomp::Runtime &, psprecomp::AllegrexContext &ctx) {
+            g_fixed_pools.erase(static_cast<std::int32_t>(ctx.gpr[4]));
+            ctx.set_gpr(2, 0u);
+        });
+
     runtime.register_hle("ThreadManForUser", 0xAA73C935u, // sceKernelExitThread
         [](psprecomp::Runtime &rt, psprecomp::AllegrexContext &ctx) {
             if (auto current = g_scheduler.threads.find(g_scheduler.current_uid);

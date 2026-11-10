@@ -54,32 +54,37 @@ ctest --test-dir out\framework -C Release --output-on-failure
 Last verified result:
 
 - `Tow1Native` builds (`BUILD OK`).
-- `psprecomp_tests` 1/1 passed before the latest HLE-only edits; rerun after
-  the final code batch.
+- `psprecomp_tests` 1/1 passed after the current HLE/GE diagnostic batch.
 - Menu frame 5000: NEW GAME / CONTINUE / OPTIONS.
 - Notice/dialogue frame 10000: host-font text renders.
 - Character-creation frame 15000: skin-color screen renders.
-- OSK HLE is reached during character creation; the screen after OSK is not
-  yet cleanly captured. A long run hit the GE command-limit path after OSK;
-  that is the active investigation.
+- Logic-only run (`PSPRECOMP_TOW1_GE_DISABLE=1`) reaches frame 15500 after
+  the OSK, with no missing HLE import and a full HLE histogram.
+- OSK status sequence is now correct:
+  `init -> visible(2) -> update -> quit(3) -> shutdown -> NONE(0)`.
+- A logic-only run with `PSPRECOMP_TOW1_GE_DISABLE=1` and destabilized
+  presenter pacing reaches frame 15500 after OSK. This proves the CPU, HLE,
+  input, and character-creation state machine progress; the remaining problem
+  is the GE list processing/rendering of the post-OSK screen.
+- The post-OSK HLE histogram shows the game still active in the sound and
+  display loops: `sceKernelGetSystemTimeWide` 364k, `sceKernelSleepThread`
+  364k, `sceSasGetEndFlag` 247k, `sceSasGetEnvelopeHeight` 265k,
+  `sceDisplaySetFrameBuf` 15.5k.
 
 ## Current diagnosis
 
-- Observation: character creation reaches the skin/voice/name flow, and
-  `sceUtilityOskInitStart` is called, but the post-OSK screen has not been
-  captured cleanly.
-- Layer: HLE/utility dialog contract, with a possible GE list-length issue on
-  the OSK UI path.
-- Hypothesis: completing OSK immediately is the right contract shape, but the
-  status/state transition or the OSK display list needs to match the real
-  dialog more closely.
-- Prediction if true: logging OSK `GetStatus`/`Update` and correcting the
-  status transition should let name entry finish and return to character
-  creation, then the field.
-- Evidence: `[tow1-osk] init params=... -> finished` appears; a following
-  `[tow1-ge] list ... exceeded the command limit` is the last diagnostic.
+- Observation: OSK completes and frame 15500 is reachable with GE disabled,
+  but the GE-enabled post-OSK run does not produce a clean frame.
+- Layer: host GE command-list processing; not the OSK HLE contract.
+- Hypothesis: one post-OSK display list is malformed or uses a jump/call form
+  the interpreter does not terminate, so it hits the command limit.
+- Prediction if true: dumping the first words of the offending list and fixing
+  its command/offset handling makes the post-OSK screen render.
+- Evidence: `[tow1-ge] list ... exceeded the command limit` recurs with GE
+  enabled; the logic-only path reaches the same frame with GE disabled.
 - Immediate diagnostic knobs: `PSPRECOMP_TOW1_OSK_DIAG=1`,
-  `PSPRECOMP_TOW1_GE_COMMAND_LIMIT=N`, `PSPRECOMP_TOW1_LIBFONT_DIAG=1`.
+  `PSPRECOMP_TOW1_GE_COMMAND_LIMIT=N`, `PSPRECOMP_TOW1_GE_DISABLE=1`,
+  `PSPRECOMP_TOW1_GE_BAD_LIST_DUMP=1`, `PSPRECOMP_TOW1_LIBFONT_DIAG=1`.
 
 ## HLE surface
 

@@ -10,12 +10,16 @@
 #include <cstdlib>
 #include <filesystem>
 #include <iostream>
+#include <chrono>
 #include <limits>
 #include <string>
+#include <thread>
 
 namespace {
 
 constexpr std::uint64_t kDefaultMaxDispatches = 10'000'000ull;
+
+psprecomp::Runtime *g_runtime_for_exit_report = nullptr;
 
 std::uint64_t parse_dispatches(const char *text) {
     if (text == nullptr || *text == '\0') return kDefaultMaxDispatches;
@@ -49,7 +53,30 @@ int main(int argc, char **argv) {
 
         psprecomp::Elf32Image elf = psprecomp::Elf32Image::from_file(executable);
         psprecomp::Runtime runtime(32u * 1024u * 1024u);
+        g_runtime_for_exit_report = &runtime;
+        std::atexit([] {
+            if (g_runtime_for_exit_report != nullptr) {
+                g_runtime_for_exit_report->report_hle_histogram();
+            }
+        });
         runtime.set_game_root(game_root);
+
+        if (const char *watchdog_text =
+                std::getenv("PSPRECOMP_TOW1_WATCHDOG_SECONDS");
+            watchdog_text != nullptr && *watchdog_text != '\0') {
+            const unsigned long long seconds =
+                std::strtoull(watchdog_text, nullptr, 0);
+            if (seconds != 0u) {
+                std::thread([seconds] {
+                    std::this_thread::sleep_for(std::chrono::seconds(seconds));
+                    std::cerr << "[tow1-watchdog] elapsed; dumping thread state\n"
+                              << std::flush;
+                    tow1::report_threads();
+                    std::cerr.flush();
+                    std::exit(0);
+                }).detach();
+            }
+        }
 
         const auto relocations = elf.load_and_relocate(
             runtime.memory(), psprecomp::kDefaultPspUserLoadBase);
@@ -175,8 +202,10 @@ int main(int argc, char **argv) {
         tow1::report_threads();
         std::cout << "Runtime stopped: " << runtime.stop_reason() << "\n";
         runtime.report_hle_histogram();
+        g_runtime_for_exit_report = nullptr;
         return runtime.stop_reason().empty() ? 0 : 4;
     } catch (const std::exception &e) {
+        g_runtime_for_exit_report = nullptr;
         std::cerr << "Tow1Native error: " << e.what() << "\n";
         tow1::report_threads();
         return 1;
