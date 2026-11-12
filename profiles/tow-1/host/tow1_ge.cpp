@@ -57,6 +57,7 @@ struct PendingGeList {
 
 std::deque<PendingGeList> g_pending_ge_lists;
 std::uint32_t g_next_ge_list_id = 1u;
+bool g_post_osk_trace = false;
 
 std::uint32_t g_framebuffer{};
 std::uint32_t g_framebuffer_stride{};
@@ -403,6 +404,12 @@ std::uint32_t ge_enqueue(psprecomp::Runtime &runtime, std::uint32_t list,
     if (list == 0u) return 0u;
     trace_ge_list_meta(runtime.memory(), list, stall);
     const std::uint32_t id = g_next_ge_list_id++;
+    if (g_post_osk_trace) {
+        std::cerr << "[tow1-ge-post] enqueue id=" << id
+                  << " list=" << psprecomp::hex32(list)
+                  << " stall=" << psprecomp::hex32(stall)
+                  << " pending=" << g_pending_ge_lists.size() << "\n";
+    }
     if (stall != 0u) {
         g_pending_ge_lists.push_back(PendingGeList{id, list, stall});
         return id;
@@ -417,6 +424,12 @@ std::uint32_t ge_enqueue_head(psprecomp::Runtime &runtime, std::uint32_t list,
     if (list == 0u) return 0u;
     trace_ge_list_meta(runtime.memory(), list, stall);
     const std::uint32_t id = g_next_ge_list_id++;
+    if (g_post_osk_trace) {
+        std::cerr << "[tow1-ge-post] enqueue-head id=" << id
+                  << " list=" << psprecomp::hex32(list)
+                  << " stall=" << psprecomp::hex32(stall)
+                  << " pending=" << g_pending_ge_lists.size() << "\n";
+    }
     if (stall != 0u) {
         g_pending_ge_lists.push_front(PendingGeList{id, list, stall});
         return id;
@@ -435,6 +448,10 @@ void ge_update_stall(std::uint32_t id, std::uint32_t stall) {
 }
 
 void ge_sync(psprecomp::Runtime &runtime, std::uint32_t id) {
+    if (g_post_osk_trace) {
+        std::cerr << "[tow1-ge-post] sync id=" << id
+                  << " pending=" << g_pending_ge_lists.size() << "\n";
+    }
     for (auto iterator = g_pending_ge_lists.begin();
          iterator != g_pending_ge_lists.end();) {
         if (id == 0u || iterator->id == id) {
@@ -447,10 +464,21 @@ void ge_sync(psprecomp::Runtime &runtime, std::uint32_t id) {
 }
 
 void ge_draw_sync(psprecomp::Runtime &runtime) {
+    if (g_post_osk_trace && !g_pending_ge_lists.empty()) {
+        std::cerr << "[tow1-ge-post] draw-sync pending="
+                  << g_pending_ge_lists.size() << "\n";
+    }
     while (!g_pending_ge_lists.empty()) {
         const PendingGeList pending = g_pending_ge_lists.front();
         g_pending_ge_lists.pop_front();
         execute_ge_list(runtime, pending.list, pending.stall);
+    }
+}
+
+void ge_set_post_osk(bool active) {
+    g_post_osk_trace = active;
+    if (active) {
+        std::cerr << "[tow1-ge-post] tracing enabled\n";
     }
 }
 

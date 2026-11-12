@@ -107,8 +107,13 @@ Last verified result:
   - 20M-dispatch run has **zero** `list ... exceeded the command limit`
     warnings.
   - A title-boot frame at 5000 renders the Bandai Namco Games logo.
-  - Post-OSK frame capture with GE enabled is still slow; use the queue
-    diagnostics next rather than treating the absence of a frame as a hang.
+  - The first post-OSK frame is captured with GE enabled. It shows the
+    full-body character model over the field background, proving the queued
+    GE lists render after the dialog transition.
+  - `PSPRECOMP_TOW1_POST_OSK_FRAME=path.ppm` arms a one-shot capture of the
+    next presented frame; `PSPRECOMP_TOW1_POST_OSK_EXIT=1` exits after it.
+  - `PSPRECOMP_TOW1_GE_POST_OSK_DIAG=1` logs enqueue/sync/draw queue activity
+    after OSK shutdown.
 - Immediate diagnostic knobs: `PSPRECOMP_TOW1_OSK_DIAG=1`,
   `PSPRECOMP_TOW1_GE_COMMAND_LIMIT=N`, `PSPRECOMP_TOW1_GE_DISABLE=1`,
   `PSPRECOMP_TOW1_GE_SUBLIST_TRACE=1`, `PSPRECOMP_TOW1_GE_BAD_LIST_DUMP=1`,

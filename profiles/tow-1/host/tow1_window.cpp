@@ -38,6 +38,8 @@ std::mutex g_mutex;
 std::condition_variable g_ready;
 std::vector<std::uint32_t> g_frame;
 bool g_have_frame = false;
+std::atomic<bool> g_post_osk_capture_armed{false};
+std::string g_post_osk_capture_path;
 
 #if defined(_WIN32)
 HWND g_hwnd = nullptr;
@@ -285,6 +287,24 @@ void window_present(const psprecomp::GuestMemory &memory, std::uint32_t address,
         ++dump_count;
     }
 
+    if (g_post_osk_capture_armed.exchange(false)) {
+        std::ofstream out(g_post_osk_capture_path, std::ios::binary);
+        if (out) {
+            out << "P6\n" << kWidth << ' ' << kHeight << "\n255\n";
+            for (const std::uint32_t pixel : frame) {
+                const char rgb[3] = {
+                    static_cast<char>((pixel >> 16u) & 0xFFu),
+                    static_cast<char>((pixel >> 8u) & 0xFFu),
+                    static_cast<char>(pixel & 0xFFu)};
+                out.write(rgb, 3);
+            }
+            std::cerr << "[tow1-frame] post-OSK capture \""
+                      << g_post_osk_capture_path << "\"\n";
+        }
+        if (std::getenv("PSPRECOMP_TOW1_POST_OSK_EXIT") != nullptr)
+            std::exit(0);
+    }
+
     if (!g_enabled.load()) return;
     if (std::getenv("PSPRECOMP_TOW1_VSYNC") == nullptr ||
         std::strcmp(std::getenv("PSPRECOMP_TOW1_VSYNC"), "0") != 0) {
@@ -304,6 +324,12 @@ void window_present(const psprecomp::GuestMemory &memory, std::uint32_t address,
 #if defined(_WIN32)
     if (g_hwnd != nullptr) PostMessageW(g_hwnd, kPresentMessage, 0, 0);
 #endif
+}
+
+void window_arm_post_osk_capture(const char *path) {
+    if (path == nullptr || *path == '\0') return;
+    g_post_osk_capture_path = path;
+    g_post_osk_capture_armed.store(true);
 }
 
 void window_shutdown() {

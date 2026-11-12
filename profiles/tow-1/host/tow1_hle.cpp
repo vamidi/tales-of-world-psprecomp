@@ -4434,6 +4434,13 @@ void register_hle(psprecomp::Runtime &runtime, std::uint32_t user_arena_start) {
                 rt.memory().store32(g_osk_params + 0x38u, 5u); // OSK state finished
             }
             g_osk_status = 0;
+            if (const char *frame_path =
+                    std::getenv("PSPRECOMP_TOW1_POST_OSK_FRAME")) {
+                window_arm_post_osk_capture(frame_path);
+            }
+            if (std::getenv("PSPRECOMP_TOW1_GE_POST_OSK_DIAG") != nullptr) {
+                ge_set_post_osk(true);
+            }
             ctx.set_gpr(2, 0u);
         });
 

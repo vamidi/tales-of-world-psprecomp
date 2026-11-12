@@ -15,6 +15,7 @@ std::uint32_t ge_enqueue_head(psprecomp::Runtime &runtime, std::uint32_t list,
 void ge_update_stall(std::uint32_t id, std::uint32_t stall);
 void ge_sync(psprecomp::Runtime &runtime, std::uint32_t id);
 void ge_draw_sync(psprecomp::Runtime &runtime);
+void ge_set_post_osk(bool active);
 
 // Records the currently displayed framebuffer and presents it.
 void ge_set_framebuffer(psprecomp::Runtime &runtime, std::uint32_t address,
