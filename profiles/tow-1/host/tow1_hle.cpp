@@ -260,6 +260,9 @@ std::int32_t g_savedata_status = 0;
 std::int32_t g_osk_status = 0;
 std::uint32_t g_osk_params = 0u;
 std::int32_t g_msgdialog_status = 0;
+bool g_post_osk_input_active = false;
+std::uint64_t g_post_osk_input_until_us = 0u;
+std::uint32_t g_post_osk_input_mask = 0u;
 
 struct MpegState {
     std::uint32_t address{};
@@ -3386,6 +3389,13 @@ void register_hle(psprecomp::Runtime &runtime, std::uint32_t user_arena_start) {
                     }
                 }
             }
+            if (g_post_osk_input_active) {
+                if (g_scheduler.now_us < g_post_osk_input_until_us) {
+                    buttons |= g_post_osk_input_mask;
+                } else {
+                    g_post_osk_input_active = false;
+                }
+            }
             if (std::getenv("PSPRECOMP_TOW1_PRESS_START") != nullptr) {
                 // Do not inject input during the opening movie.  The title
                 // pointer becomes non-zero when the title state is active.
@@ -3413,7 +3423,7 @@ void register_hle(psprecomp::Runtime &runtime, std::uint32_t user_arena_start) {
                         if (elapsed >= 15000000u && elapsed < 15250000u)
                             buttons |= 0x4000u; // New Game
                         if (const char *menu = std::getenv("PSPRECOMP_TOW1_MENU_BUTTON");
-                            menu != nullptr && elapsed >= 20000000u && elapsed < 600000000u &&
+                            menu != nullptr && elapsed >= 20000000u && elapsed < 1800000000u &&
                             (elapsed % 5000000u) < 250000u)
                             buttons |= static_cast<std::uint32_t>(
                                 std::strtoul(menu, nullptr, 0));
@@ -4437,6 +4447,20 @@ void register_hle(psprecomp::Runtime &runtime, std::uint32_t user_arena_start) {
             if (const char *frame_path =
                     std::getenv("PSPRECOMP_TOW1_POST_OSK_FRAME")) {
                 window_arm_post_osk_capture(frame_path);
+            }
+            if (const char *button_text =
+                    std::getenv("PSPRECOMP_TOW1_POST_OSK_BUTTON")) {
+                g_post_osk_input_mask = static_cast<std::uint32_t>(
+                    std::strtoul(button_text, nullptr, 0));
+                std::uint64_t duration_us = 2000000u;
+                if (const char *duration_text =
+                        std::getenv("PSPRECOMP_TOW1_POST_OSK_BUTTON_US")) {
+                    duration_us = std::strtoull(duration_text, nullptr, 0);
+                }
+                if (g_post_osk_input_mask != 0u && duration_us != 0u) {
+                    g_post_osk_input_active = true;
+                    g_post_osk_input_until_us = g_scheduler.now_us + duration_us;
+                }
             }
             if (std::getenv("PSPRECOMP_TOW1_GE_POST_OSK_DIAG") != nullptr) {
                 ge_set_post_osk(true);

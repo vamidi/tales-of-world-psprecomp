@@ -23,8 +23,9 @@
 - ELF type / load base: `0xFFA0` (PSP PRX) / `0x08804000`
 - SHA-256: `105280ceba06338bd6bfdd2142c7950a6cb683c1798f3668c9df8898a2e5b89d`
 - Module / gp: `TOW_MAIN_ALFASYSTEM` / `0x08DBA950`
-- Current phase: 7 — gameplay stability. Character creation renders; the
-  first controllable field is the active gate.
+- Current phase: 7 — gameplay stability. Character creation is complete and
+  the first controllable field has been reached; field-movement verification
+  is the next gate.
 
 ## Analysis and corpus
 
@@ -60,6 +61,11 @@ Last verified result:
 - Character-creation frame 15000: skin-color screen renders.
 - Logic-only run (`PSPRECOMP_TOW1_GE_DISABLE=1`) reaches frame 15500 after
   the OSK, with no missing HLE import and a full HLE histogram.
+- Character creation reaches the field:
+  - 300 presents after OSK: Confirm screen.
+  - 600 presents: transition cutscene.
+  - 3000 presents: first field dialogue (Mermo / “Yacon”).
+  - 6000 presents: controllable field with character and compass HUD.
 - OSK status sequence is now correct:
   `init -> visible(2) -> update -> quit(3) -> shutdown -> NONE(0)`.
 - A logic-only run with `PSPRECOMP_TOW1_GE_DISABLE=1` and destabilized
@@ -117,7 +123,10 @@ Last verified result:
 - Immediate diagnostic knobs: `PSPRECOMP_TOW1_OSK_DIAG=1`,
   `PSPRECOMP_TOW1_GE_COMMAND_LIMIT=N`, `PSPRECOMP_TOW1_GE_DISABLE=1`,
   `PSPRECOMP_TOW1_GE_SUBLIST_TRACE=1`, `PSPRECOMP_TOW1_GE_BAD_LIST_DUMP=1`,
-  `PSPRECOMP_TOW1_LIBFONT_DIAG=1`.
+  `PSPRECOMP_TOW1_POST_OSK_FRAME=path`,
+  `PSPRECOMP_TOW1_POST_OSK_FRAME_DELAY=N`,
+  `PSPRECOMP_TOW1_POST_OSK_BUTTON=mask`,
+  `PSPRECOMP_TOW1_POST_OSK_BUTTON_US=N`, `PSPRECOMP_TOW1_LIBFONT_DIAG=1`.
 
 ## HLE surface
 

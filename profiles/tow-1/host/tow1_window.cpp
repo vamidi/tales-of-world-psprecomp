@@ -40,6 +40,7 @@ std::vector<std::uint32_t> g_frame;
 bool g_have_frame = false;
 std::atomic<bool> g_post_osk_capture_armed{false};
 std::string g_post_osk_capture_path;
+std::uint32_t g_post_osk_capture_delay = 0u;
 
 #if defined(_WIN32)
 HWND g_hwnd = nullptr;
@@ -287,7 +288,11 @@ void window_present(const psprecomp::GuestMemory &memory, std::uint32_t address,
         ++dump_count;
     }
 
-    if (g_post_osk_capture_armed.exchange(false)) {
+    if (g_post_osk_capture_armed.load() && g_post_osk_capture_delay != 0u) {
+        --g_post_osk_capture_delay;
+    }
+    if (g_post_osk_capture_armed.load() && g_post_osk_capture_delay == 0u &&
+        g_post_osk_capture_armed.exchange(false)) {
         std::ofstream out(g_post_osk_capture_path, std::ios::binary);
         if (out) {
             out << "P6\n" << kWidth << ' ' << kHeight << "\n255\n";
@@ -329,6 +334,12 @@ void window_present(const psprecomp::GuestMemory &memory, std::uint32_t address,
 void window_arm_post_osk_capture(const char *path) {
     if (path == nullptr || *path == '\0') return;
     g_post_osk_capture_path = path;
+    g_post_osk_capture_delay = 0u;
+    if (const char *delay_text =
+            std::getenv("PSPRECOMP_TOW1_POST_OSK_FRAME_DELAY")) {
+        g_post_osk_capture_delay = static_cast<std::uint32_t>(
+            std::strtoul(delay_text, nullptr, 0));
+    }
     g_post_osk_capture_armed.store(true);
 }
 
