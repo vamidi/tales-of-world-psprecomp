@@ -93,9 +93,11 @@ Last verified result:
     import and no GE command-limit warning.
   - Battle GE trace: lists `0x490964C0` and `0x48E0F740`, each queued with
     `stall == list`, flushed by `draw-sync` before presentation.
-- Battle menu/Artes flow verified:
+- Battle menu/ability flow verified:
   - `battle_menu_items.png` — battle item/command menu.
   - `battle_menu_unison.png` — “Select artes used for Unison attack”.
+  - `arte_12000.png` / `arte_12200.png` — battle attack/effect frames while
+    the party is in combat.
   - Menu input uses Triangle; battle HUD remains live behind the menu.
 - Post-battle scene captured:
   - `post_battle_chester.png` — Chester/Kanonno/Mormo dialogue after the
@@ -103,6 +105,8 @@ Last verified result:
   - `town_return.png` — Mormo/town view after the scene.
   - `town_interaction.png` — town NPC dialogue after the return
     (“M-my daughter is…”), confirming the field-to-town interaction path.
+  - `town_move.png` / `town_guild.png` / `town_guild2.png` — town movement and
+    a second NPC dialogue; the guild/quest counter has not yet been reached.
 - Earlier field-route attempts (`field_down*`, `field_left*`, `field_right*`,
   `field_south_camera.png`) are retained as route evidence.
 - OSK status sequence is now correct:
@@ -418,8 +422,7 @@ The full import/HLE matrix and milestone order live in
 
 ## Next steps
 
-1. Reach and verify the Ailily guild/quest flow after the town NPC
-   interaction.
+1. Navigate the town to the Ailily guild and capture the quest list/dialogue.
 2. Re-check `cSoundManager`: it should resume at `0x08B1CE44` once the title
    frame loop runs; silent SAS is still acceptable until audio is required.
 3. Compare native frames with PPSSPP during the movie/title transition.
