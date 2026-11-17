@@ -467,8 +467,19 @@ void title_creator_thread_entry(psprecomp::Runtime &runtime,
 
 std::uint32_t g_scene_watch_address = 0u;
 std::uint32_t g_scene_watch_value = 0xFFFFFFFFu;
+// Actual `this` passed to the scene registration method 0x0881C224.
+std::uint32_t g_asset_owner = 0u;
+// One-shot: after the title frame entry has run, locate the registered asset
+// container (vtable 0x08C44B08) and invoke one of its virtual methods.
+int g_drive_container_countdown = -1;
 
-void scene_caller_hook(psprecomp::Runtime &,
+constexpr std::uint32_t kIsolatedReturnSentinel = 0xDEADBEEFu;
+bool run_isolated_aot(psprecomp::Runtime &runtime,
+                      psprecomp::AllegrexContext &ctx, std::uint32_t entry,
+                      std::uint32_t return_sentinel, int max_steps,
+                      const char *tag);
+
+void scene_caller_hook(psprecomp::Runtime &runtime,
                        psprecomp::AllegrexContext &ctx,
                        std::uint32_t dispatch_pc,
                        std::int32_t thread_uid) {
@@ -491,10 +502,16 @@ void scene_caller_hook(psprecomp::Runtime &,
                   << " a1=" << psprecomp::hex32(ctx.gpr[5])
                   << " uid=" << thread_uid << "\n";
     }
+    if (dispatch_pc == 0x0881C224u && g_asset_owner == 0u) {
+        g_asset_owner = ctx.gpr[4];
+        std::cerr << "[tow2-asset-owner] this="
+                  << psprecomp::hex32(g_asset_owner)
+                  << " ra=" << psprecomp::hex32(ctx.gpr[31])
+                  << " uid=" << thread_uid << "\n";
+    }
     if (dispatch_pc == 0x08817298u || dispatch_pc == 0x08813874u ||
         dispatch_pc == 0x08814460u || dispatch_pc == 0x0881460Cu ||
-        dispatch_pc == 0x08813F00u) {
-        static std::uint64_t seen = 0;
+        dispatch_pc == 0x08813F00u) {        static std::uint64_t seen = 0;
         if (seen < 40u) {
             ++seen;
             std::cerr << "[tow2-scene-caller] pc="
@@ -503,6 +520,49 @@ void scene_caller_hook(psprecomp::Runtime &,
                       << " a0=" << psprecomp::hex32(ctx.gpr[4])
                       << " a1=" << psprecomp::hex32(ctx.gpr[5])
                       << " uid=" << thread_uid << "\n";
+        }
+    }
+    if (std::getenv("PSPRECOMP_TOW2_DRIVE_CONTAINER") != nullptr) {
+        if (dispatch_pc == 0x088206D8u && g_drive_container_countdown < 0) {
+            g_drive_container_countdown = 20000;
+        }
+        if (g_drive_container_countdown > 0) {
+            --g_drive_container_countdown;
+        } else if (g_drive_container_countdown == 0) {
+            g_drive_container_countdown = -1;
+            constexpr std::uint32_t kVtable = 0x08C44B08u;
+            std::uint32_t container = 0u;
+            for (std::uint32_t address = 0x08D15000u; address < 0x0A000000u;
+                 address += 4u) {
+                if (!runtime.memory().contains(address, 4u)) continue;
+                if (runtime.memory().load32(address) == kVtable) {
+                    container = address;
+                    break;
+                }
+            }
+            std::cerr << "[tow2-drive] container=" << psprecomp::hex32(container)
+                      << "\n";
+            if (container != 0u) {
+                const std::uint32_t method =
+                    runtime.memory().load32(kVtable + 4u);
+                std::cerr << "[tow2-drive] method(+4)="
+                          << psprecomp::hex32(method) << " state="
+                          << psprecomp::hex32(
+                                 runtime.memory().load32(container + 1228u))
+                          << "\n";
+                psprecomp::AllegrexContext drive_ctx = ctx;
+                drive_ctx.set_gpr(4, container);
+                drive_ctx.set_gpr(29, ctx.gpr[29] - 0x2000u);
+                const bool drive_ok = run_isolated_aot(
+                    runtime, drive_ctx, method, kIsolatedReturnSentinel,
+                    500000, "container-load");
+                std::cerr << "[tow2-drive] ok=" << (drive_ok ? 1 : 0)
+                          << " ret=" << psprecomp::hex32(drive_ctx.gpr[2])
+                          << " state="
+                          << psprecomp::hex32(
+                                 runtime.memory().load32(container + 1228u))
+                          << "\n";
+            }
         }
     }
 }
@@ -859,12 +919,10 @@ void wait_thread_end(psprecomp::Runtime &runtime, psprecomp::AllegrexContext &ct
     }
 }
 
-constexpr std::uint32_t kIsolatedReturnSentinel = 0xDEADBEEFu;
-
 bool run_isolated_aot(psprecomp::Runtime &runtime,
                       psprecomp::AllegrexContext &ctx, std::uint32_t entry,
-                      std::uint32_t return_sentinel, int max_steps = 200000,
-                      const char *tag = "iso") {
+                      std::uint32_t return_sentinel, int max_steps,
+                      const char *tag) {
     ctx.pc = entry;
     ctx.set_gpr(31, return_sentinel);
 
@@ -1146,6 +1204,9 @@ void delete_thread(psprecomp::Runtime &runtime, psprecomp::AllegrexContext &ctx)
                     std::cerr << "[tow2-title] mount thread uid=" << mount_uid
                               << "\n";
                     g_mount_thread_uid = mount_uid;
+                    if (std::getenv("PSPRECOMP_TOW2_DRIVE_CONTAINER") != nullptr) {
+                        g_drive_container_countdown = 20000;
+                    }
                     if (std::getenv("PSPRECOMP_TOW2_HOLD_USER_MAIN") != nullptr) {
                         for (auto &[thread_uid, thread] : g_scheduler.threads) {
                             if (thread.name != "user_main") continue;
@@ -3058,6 +3119,79 @@ void report_threads() {
                       << psprecomp::hex32(
                              g_mpeg_memory->load32(vtable + index * 4u))
                       << "\n";
+        }
+    }
+    if (g_mpeg_memory != nullptr &&
+        std::getenv("PSPRECOMP_TOW2_TITLE_VTABLE") != nullptr &&
+        g_asset_owner != 0u) {
+        const std::uint32_t owner = g_asset_owner;
+        const std::uint32_t container = owner + 12032u;
+        std::cerr << "[tow2-owner] owner=" << psprecomp::hex32(owner)
+                  << " vtable=" << psprecomp::hex32(
+                         g_mpeg_memory->load32(owner))
+                  << "\n";
+        if (g_mpeg_memory->contains(container, 1300u)) {
+            const std::uint32_t cvtable = g_mpeg_memory->load32(container);
+            std::cerr << "[tow2-owner] container="
+                      << psprecomp::hex32(container)
+                      << " vtable=" << psprecomp::hex32(cvtable)
+                      << " state="
+                      << psprecomp::hex32(
+                             g_mpeg_memory->load32(container + 1228u))
+                      << " b1232="
+                      << static_cast<unsigned>(
+                             g_mpeg_memory->load8(container + 1232u))
+                      << " b1233="
+                      << static_cast<unsigned>(
+                             g_mpeg_memory->load8(container + 1233u))
+                      << " p560="
+                      << psprecomp::hex32(
+                             g_mpeg_memory->load32(container + 560u))
+                      << " p568="
+                      << psprecomp::hex32(
+                             g_mpeg_memory->load32(container + 568u))
+                      << "\n";
+            for (std::uint32_t index = 0;
+                 index < 24u && cvtable != 0u &&
+                 g_mpeg_memory->contains(cvtable + index * 4u, 4u); ++index) {
+                std::cerr << "[tow2-owner] +" << index * 4u << " = "
+                          << psprecomp::hex32(
+                                 g_mpeg_memory->load32(cvtable + index * 4u))
+                          << "\n";
+            }
+        }
+    }
+    if (g_mpeg_memory != nullptr &&
+        std::getenv("PSPRECOMP_TOW2_FIND_CONTAINER") != nullptr) {
+        constexpr std::uint32_t kAssetContainerVtable = 0x08C44B08u;
+        for (std::uint32_t address = 0x08D15000u; address < 0x0A000000u;
+             address += 4u) {
+            if (!g_mpeg_memory->contains(address, 4u)) continue;
+            if (g_mpeg_memory->load32(address) != kAssetContainerVtable) continue;
+            const std::uint32_t container = address;
+            const std::uint32_t owner = address - 12032u;
+            std::cerr << "[tow2-container] at=" << psprecomp::hex32(container)
+                      << " owner=" << psprecomp::hex32(owner)
+                      << " state="
+                      << psprecomp::hex32(
+                             g_mpeg_memory->load32(container + 1228u))
+                      << " b1232="
+                      << static_cast<unsigned>(
+                             g_mpeg_memory->load8(container + 1232u))
+                      << " b1233="
+                      << static_cast<unsigned>(
+                             g_mpeg_memory->load8(container + 1233u))
+                      << " p1224="
+                      << psprecomp::hex32(
+                             g_mpeg_memory->load32(container + 1224u))
+                      << "\n";
+            for (std::uint32_t index = 0; index < 32u; ++index) {
+                std::cerr << "[tow2-container] +" << index * 4u << " = "
+                          << psprecomp::hex32(g_mpeg_memory->load32(
+                                 kAssetContainerVtable + index * 4u))
+                          << "\n";
+            }
+            break;
         }
     }
     std::cerr << "[tow2] semaphores:\n";

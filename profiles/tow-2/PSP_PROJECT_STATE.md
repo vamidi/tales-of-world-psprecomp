@@ -237,6 +237,32 @@ Next: capture the `this` argument of `0x0881C224` when the scene manager
 invokes it, dump that object's `+12032` container (vtable/state), and drive
 its load virtual before the sprite update.
 
+### Captured container + drive attempt (2026-11-17)
+
+- The registered asset container is found by scanning for vtable
+  `0x08C44B08` (set by its constructor `0x08AC5C98`):
+  - container `0x08DA4460`, owner `0x08DA1560` (container = owner + 12032)
+  - state `+1228` = `3` at stop (was `9` in another run)
+  - `+1232` = 1 (list built), `+1233` = 0
+  - `+1224` = `0x08DA4940` (owner + 13280)
+- Container vtable `0x08C44B08` (selected slots):
+  - `+0`  `0x08AC5BC0`
+  - `+4`  `0x08AC5C98`  — constructor/reset (re-installs the vtable)
+  - `+8`  `0x08A6158C`
+  - `+20..+100` `0x08A5Exxx` (c2c2Sprite methods)
+  - `+104` `0x0881F4E8` — clears the five sprites at `+576` (stride 128)
+  - `+108..+124` more `0x08A5Exxx`
+- Drive attempt: after 20,000 dispatches from the mount-thread start the
+  container exists (state 0) and the probe invoked `[vtable+4]`
+  (`0x08AC5C98`) with `a0=container`. It faulted:
+  `Guest memory access ... 0x00000009` (null + 9), because that slot is the
+  constructor/reset, not a load method, and the container was mid-init.
+- No `TitleArchive` open in this attempt.
+
+Next: do not call `+4`. Identify the owner-side load call (the owner
+`0x08DA1560` is the object whose virtual dispatch advances `+1228` from 0 to
+3), or call a non-constructor slot (`+8`/`+104`) once the state is settled.
+
 ## Title scene ordering (2026-11-17)
 
 Goal: start the title mount before `user_main` resumes, then observe
