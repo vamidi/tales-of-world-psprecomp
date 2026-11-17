@@ -355,6 +355,29 @@ Next: locate the function that walks the mount list and compares the inline
 prefix at `node+0x80`, and find where the sprite's texture/name field is
 written (not the `+36` update call).
 
+### Walker / texture-assignment search (2026-11-17)
+
+- The mount node's `+0x40`/`+0x44` fields point into heap free-list nodes
+  (`0x08F11C80`/`0x08F11D80`), not to source objects:
+  ```
+  obj 0x08F11D00: +0=0x08F11C80 +4=0x08F11D80, rest 0
+  0x08F11C80:     +0=0x08F11B00 +4=0x08F11D00
+  ```
+- The `+132` references in the 0x08A5Cxxx/0x08A5Dxxx code are vtable slot
+  offsets (`vtable+132`), not the mount prefix.
+- No function in the corpus compares the inline prefix at `node+0x84`;
+  `0x08A59378` remains a find-by-source helper.
+- No sprite texture/name assignment was found; the only per-sprite call in
+  the builder is `[vtable+36] = 0x08A5FAD4(sprite, 64, 16)`, a forwarder.
+- Verification unchanged: `PSPRECOMP_FILE_DIAG=1` shows only
+  `title/title.pmf`; no `TitleArchive` open, no `[tow2][ezbind]`.
+
+The mount and the sprite records are both real and correctly populated, but
+the resolution/assignment path that would request an entry has not been
+located in the generated corpus. Next options: trace `0x08AAAF48` (the hash
+used when creating the mount entry) and search for comparisons against that
+hash, or use PPSSPP as an oracle to capture the real request call site.
+
 ## Title scene ordering (2026-11-17)
 
 Goal: start the title mount before `user_main` resumes, then observe

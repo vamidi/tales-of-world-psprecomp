@@ -661,6 +661,26 @@ void scene_caller_hook(psprecomp::Runtime &runtime,
                                           << psprecomp::hex32(
                                                  runtime.memory().load32(object))
                                           << "\n";
+                                for (std::uint32_t offset = 0; offset < 32u;
+                                     offset += 4u) {
+                                    std::cerr << "[tow2-mount]   obj+"
+                                              << offset << " = "
+                                              << psprecomp::hex32(
+                                                     runtime.memory().load32(
+                                                         object + offset))
+                                              << "\n";
+                                }
+                                const std::uint32_t table =
+                                    runtime.memory().load32(object);
+                                for (std::uint32_t index = 0; index < 12u;
+                                     ++index) {
+                                    std::cerr << "[tow2-mount]   vt+"
+                                              << index * 4u << " = "
+                                              << psprecomp::hex32(
+                                                     runtime.memory().load32(
+                                                         table + index * 4u))
+                                              << "\n";
+                                }
                             }
                         }
                         node = runtime.memory().load32(node);
