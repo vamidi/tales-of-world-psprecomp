@@ -298,6 +298,36 @@ Next: inspect the sprite constructor/texture setter (`0x08A5F1A4`,
 `0x08A5EF88`, `0x08A5FA28` → `0x08A5FD30`) for the texture source call, or
 find the texture manager that consumes the `ppt` name from the pair.
 
+### Texture source trace (2026-11-17)
+
+The mount is **valid**; the earlier VFS check used the wrong lookup API.
+
+- Mount list node `0x08F11D40` (manager `0x08D4F120`):
+  - `+0/+4` list links, sentinel `0x08D4F130`
+  - `+8` = `0x08F11B40` → `"title/title.arc"` (source path)
+  - `+0x80` = `13` (prefix length)
+  - `+0x84..` = `"TitleArchive/"` stored inline
+  - `+0x40` = `0x08F11D00`, `+0x44` = `0x08F11F00` (source objects)
+- `0x08A59378(manager, "TitleArchive/water_02.ppt")` returns `0` because it
+  compares `[node+8]` (the *source* path) — it is a find-by-source helper, not
+  a virtual-path resolver. The mount itself succeeded.
+- Five sprite records at `container+576` (stride 128):
+  ```
+  sprite 0 @0x08DA46A0: vtable=0x08C44078 owner=0x08DA4460 +16=0x58 +20=0xF8
+  sprite 1 @0x08DA4720: vtable=0x08C44078 owner=0x08DA4460 +16=0x98 +20=0xF8
+  sprite 2 @0x08DA47A0: ... +16=0xD8
+  sprite 3 @0x08DA4820: ... +16=0x118
+  sprite 4 @0x08DA48A0: ... +16=0x158
+  ```
+  `+16` steps by `0x40`, `+20` is `0xF8` — atlas UV rectangles, not paths.
+  No texture pointer is bound yet (those fields are `0`).
+- Therefore the texture source is resolved through the mount prefix
+  (`node+0x80`/`node+0x84`), by a resolver other than `0x08A59378`, and it is
+  never reached because the sprites have no texture assigned.
+
+Next: find the virtual-path resolver that compares the inline prefix at
+`node+0x80`, and the sprite texture setter that feeds it the `ppt` name.
+
 ## Title scene ordering (2026-11-17)
 
 Goal: start the title mount before `user_main` resumes, then observe

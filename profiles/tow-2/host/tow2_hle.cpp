@@ -548,6 +548,112 @@ void scene_caller_hook(psprecomp::Runtime &runtime,
                                        g_watched_container + 1228u)
                                  : 0u)
                       << "\n";
+            if (std::getenv("PSPRECOMP_TOW2_VFS_CHECK") != nullptr) {
+                psprecomp::AllegrexContext manager_ctx = ctx;
+                manager_ctx.set_gpr(4, 0u);
+                manager_ctx.set_gpr(29, ctx.gpr[29] - 0x1000u);
+                const bool manager_ok = run_isolated_aot(
+                    runtime, manager_ctx, 0x08AC5338u, kIsolatedReturnSentinel,
+                    200000, "vfs-manager");
+                const std::uint32_t manager = manager_ctx.gpr[2];
+                psprecomp::AllegrexContext find_ctx = ctx;
+                find_ctx.set_gpr(4, manager);
+                find_ctx.set_gpr(
+                    5, 0x08C239A4u); // "TitleArchive/water_02.ppt"
+                find_ctx.set_gpr(29, ctx.gpr[29] - 0x2000u);
+                const bool find_ok = run_isolated_aot(
+                    runtime, find_ctx, 0x08A59378u, kIsolatedReturnSentinel,
+                    200000, "vfs-find");
+                std::cerr << "[tow2-vfs-check] manager_ok="
+                          << (manager_ok ? 1 : 0) << " manager="
+                          << psprecomp::hex32(manager) << " find_ok="
+                          << (find_ok ? 1 : 0) << " find="
+                          << psprecomp::hex32(find_ctx.gpr[2]) << "\n";
+                if (manager != 0u &&
+                    runtime.memory().contains(manager + 16u, 12u)) {
+                    std::cerr << "[tow2-vfs-check] head="
+                              << psprecomp::hex32(
+                                     runtime.memory().load32(manager + 16u))
+                              << " sentinel=" << psprecomp::hex32(manager + 16u)
+                              << " +20="
+                              << psprecomp::hex32(
+                                     runtime.memory().load32(manager + 20u))
+                              << " +24="
+                              << psprecomp::hex32(
+                                     runtime.memory().load32(manager + 24u))
+                              << "\n";
+                    std::uint32_t node =
+                        runtime.memory().load32(manager + 16u);
+                    for (int index = 0; index < 16 && node != 0u &&
+                                        node != manager + 16u; ++index) {
+                        if (!runtime.memory().contains(node, 16u)) break;
+                        const std::uint32_t name =
+                            runtime.memory().load32(node + 8u);
+                        std::string text;
+                        if (name != 0u &&
+                            runtime.memory().contains(name, 1u)) {
+                            text = runtime.memory().read_c_string(name, 64u);
+                        }
+                        std::cerr << "[tow2-vfs-check] node="
+                                  << psprecomp::hex32(node) << " next="
+                                  << psprecomp::hex32(
+                                         runtime.memory().load32(node))
+                                  << " name=" << psprecomp::hex32(name)
+                                  << " \"" << text << "\"\n";
+                        if (index == 0) {
+                            for (std::uint32_t offset = 0; offset < 0x110u;
+                                 offset += 4u) {
+                                if (!runtime.memory().contains(node + offset, 4u))
+                                    break;
+                                const std::uint32_t word =
+                                    runtime.memory().load32(node + offset);
+                                if (word == 0u) continue;
+                                std::cerr << "[tow2-vfs-check]   +" << offset
+                                          << " = " << psprecomp::hex32(word);
+                                if (word >= 0x08C00000u && word < 0x08D20000u &&
+                                    runtime.memory().contains(word, 1u)) {
+                                    const std::string s =
+                                        runtime.memory().read_c_string(word, 48u);
+                                    bool printable = !s.empty();
+                                    for (char c : s) {
+                                        if (c < 0x20 || c > 0x7E) printable = false;
+                                    }
+                                    if (printable) std::cerr << " \"" << s << "\"";
+                                }
+                                std::cerr << "\n";
+                            }
+                            for (std::uint32_t sprite = 0; sprite < 5u; ++sprite) {
+                                const std::uint32_t base =
+                                    g_watched_container + 576u + sprite * 128u;
+                                std::cerr << "[tow2-sprite] " << sprite << " @"
+                                          << psprecomp::hex32(base) << ":";
+                                for (std::uint32_t offset = 0; offset < 32u;
+                                     offset += 4u) {
+                                    std::cerr << " "
+                                              << psprecomp::hex32(
+                                                     runtime.memory().load32(
+                                                         base + offset));
+                                }
+                                std::cerr << "\n";
+                            }
+                            for (const std::uint32_t field : {64u, 68u}) {
+                                const std::uint32_t object =
+                                    runtime.memory().load32(node + field);
+                                if (object == 0u ||
+                                    !runtime.memory().contains(object, 4u))
+                                    continue;
+                                std::cerr << "[tow2-mount] +" << field << " obj="
+                                          << psprecomp::hex32(object)
+                                          << " vtable="
+                                          << psprecomp::hex32(
+                                                 runtime.memory().load32(object))
+                                          << "\n";
+                            }
+                        }
+                        node = runtime.memory().load32(node);
+                    }
+                }
+            }
         }
     }
     if (std::getenv("PSPRECOMP_TOW2_STATE_WATCH") != nullptr &&
