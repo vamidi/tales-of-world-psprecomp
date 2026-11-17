@@ -464,6 +464,52 @@ Conclusion: `0x08A58D3C` is a *source-name* walker whose matched virtual is not
 the archive body reader. The mount source object is `0x08DA1270`
 (vtable `0x08C703F0`); its `vtable+36` slot needs to be identified directly.
 
+### Mount-source vtable dump (2026-11-17)
+
+The vtable stores **image-relative** offsets; add `0x08804000` at runtime.
+
+```
+0x08C703F0: 0x002567E0 0x002567E8 0x002567F0 0x002567F8
+            0x00258480 0x00256B14 0x00258218 0x0025828C
+            0x00258368 0x002567D8 0x00256AC4 0x00256B68
+            0x002561C0 0x002564AC 0x002568AC 0x00256A00
+```
+
+Resolved slots:
+
+| slot | target | role |
+|------|--------|------|
+| +0  | 0x08A5A7E0 | get `[this+16]` |
+| +4  | 0x08A5A7E8 | get `[this+8]` |
+| +8  | 0x08A5A7F0 | get `[this+12]` |
+| +12 | 0x08A5A7F8 | get `[this+4]` |
+| +16 | 0x08A5C480 | `0x08AC5338()` + `0x08A58ACC(manager, source)` — attach/register |
+| +20 | 0x08A5AB14 | set `[this+284]=1` (mode) |
+| +24 | 0x08A5C218 | virtual dispatch |
+| +28 | 0x08A5C28C | — |
+| +32 | 0x08A5C368 | — |
+| +36 | 0x08A5A7D8 | set `[this+16] = arg` (mode setter) |
+
+So `0x08A58D3C`'s call `[source+36](source, 2)` is a **mode setter**, not an
+open. The source is a file abstraction attached through `0x08A5C480` /
+`0x08A58ACC`; its read path is manager-side, not this vtable.
+
+### PPSSPP SKU mismatch (2026-11-17)
+
+After a `ppsspp_reset`, the emulator reports a **different title**:
+
+```
+Title: Radiant Mythology   Disc ID: ULES00837   Version: 1.00
+```
+
+Earlier in the same session it reported `ULJS00175` v1.01. The tow-2 profile
+targets `ULJS00175`. Therefore:
+- JP address breakpoints (`0x08A59210`, `0x088206D8`) cannot be trusted in
+  the current emulator state — the loaded module may be a different build.
+- The earlier "mount breakpoint never fired" result is inconclusive.
+- To use PPSSPP as an oracle for this profile, the JP/English-patched ISO
+  (`ULJS00175`) must be the loaded disc before setting breakpoints.
+
 ## Title scene ordering (2026-11-17)
 
 Goal: start the title mount before `user_main` resumes, then observe
