@@ -420,6 +420,37 @@ execution breakpoints work.
 No `TitleArchive` open was observed in either the native port or the PPSSPP
 window.
 
+### Narrower resolver test (2026-11-17)
+
+Found a candidate resolver at `0x08A58D3C(a0=manager, a1=name)`:
+
+```
+0x08A58D3C:
+    sema_wait(manager+576)
+    node = [manager+16]
+    sentinel = manager+16
+    while (node != sentinel):
+        name = [node+8]
+        node = [node]
+        if (strcmp(name, a1) == 0):        // 0x08AA9BE4
+            source = [name+264]
+            [source->vtable+36](source, 2)
+            ...
+            return
+```
+
+It is the only VFS-region walker that compares `[node+8]` and then uses the
+source field at `+264` (the same field `0x08A59210` stores). Driving it:
+
+```
+[tow2-resolve] query="title/title.arc" manager_ok=1 ok=1 ret=0x00000000
+```
+
+Result: no match, no open (`ret=0`). So either `[node+8]` is not the plain
+source string, or this walker expects a different key/typed string object.
+
+No `TitleArchive` open in this test.
+
 ## Title scene ordering (2026-11-17)
 
 Goal: start the title mount before `user_main` resumes, then observe

@@ -548,6 +548,41 @@ void scene_caller_hook(psprecomp::Runtime &runtime,
                                        g_watched_container + 1228u)
                                  : 0u)
                       << "\n";
+            if (std::getenv("PSPRECOMP_TOW2_RESOLVE") != nullptr) {
+                const char *query = std::getenv("PSPRECOMP_TOW2_RESOLVE");
+                std::uint32_t text = 0x08C24000u;
+                bool ok = runtime.memory().contains(text, 128u);
+                if (ok) {
+                    for (std::size_t i = 0; i < 128u; ++i) {
+                        runtime.memory().store8(
+                            text + static_cast<std::uint32_t>(i), 0u);
+                    }
+                    for (std::size_t i = 0; query[i] != '\0' && i < 127u; ++i) {
+                        runtime.memory().store8(
+                            text + static_cast<std::uint32_t>(i),
+                            static_cast<std::uint8_t>(query[i]));
+                    }
+                }
+                psprecomp::AllegrexContext manager_ctx = ctx;
+                manager_ctx.set_gpr(4, 0u);
+                manager_ctx.set_gpr(29, ctx.gpr[29] - 0x1000u);
+                const bool manager_ok = run_isolated_aot(
+                    runtime, manager_ctx, 0x08AC5338u, kIsolatedReturnSentinel,
+                    200000, "resolve-manager");
+                const std::uint32_t manager = manager_ctx.gpr[2];
+                psprecomp::AllegrexContext resolve_ctx = ctx;
+                resolve_ctx.set_gpr(4, manager);
+                resolve_ctx.set_gpr(5, text);
+                resolve_ctx.set_gpr(29, ctx.gpr[29] - 0x2000u);
+                const bool resolve_ok = run_isolated_aot(
+                    runtime, resolve_ctx, 0x08A58D3Cu, kIsolatedReturnSentinel,
+                    500000, "resolve");
+                std::cerr << "[tow2-resolve] query=\"" << query
+                          << "\" manager_ok=" << (manager_ok ? 1 : 0)
+                          << " ok=" << (resolve_ok ? 1 : 0)
+                          << " ret=" << psprecomp::hex32(resolve_ctx.gpr[2])
+                          << "\n";
+            }
             if (std::getenv("PSPRECOMP_TOW2_VFS_CHECK") != nullptr) {
                 psprecomp::AllegrexContext manager_ctx = ctx;
                 manager_ctx.set_gpr(4, 0u);
