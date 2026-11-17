@@ -180,6 +180,34 @@ Next: find what submits the built asset list (the state machine around
 `0x0881EC38` / the title state thread). The list is built but never handed to
 the file manager.
 
+### Asset-list next state (traced 2026-11-17)
+
+- The list built by `0x0881F5B0` is consumed by the title object's update
+  loop, which constructs **`c2c2Sprite`** objects:
+  - vtables `0x08C6CEA0` and `0x08C44078`
+  - virtual hook at `vtable+180` = **`0x08A5FD30`** (sprite update/draw)
+- `0x08A5FA28` is **not** a file submit. It stores `a1..a4` at `this+80..+92`
+  and calls `[vtable+180]`. Traced calls:
+  `self=0x08D9F850 vtable=0x08C44078 hook=0x08A5FD30 a1=0x40 a2=0x30 ...`
+  (small geometry values, not paths).
+- It runs **633,578 times** in a 300M-dispatch run, i.e. the title update
+  loop is iterating sprites, not requesting files.
+- VFS activity in that configuration:
+  - `0x08A59378` (VFS find) = **0**
+  - `0x08A7384C` (sync open) = **0**
+  - `0x08A59210` (mount) = 4
+  - `0x08A59768` (file worker loop) = 7,910
+- `PSPRECOMP_FILE_DIAG=1` shows no `.arc` open; only `title/title.pmf`.
+
+So the title object is in its **sprite/actor update state**, not its asset
+load state. The VFS submission is upstream of `0x08A5FA28`; it must happen in
+the title object's load state machine before the sprites are configured.
+
+Next: identify the state that turns the built list into VFS requests (likely
+the title object's `0x0881EC38` state machine / `0x0881C224` load path) and
+drive that transition, then re-check `0x08A59378`/`0x08A7384C` and
+`[tow2][ezbind]`.
+
 ## Title scene ordering (2026-11-17)
 
 Goal: start the title mount before `user_main` resumes, then observe

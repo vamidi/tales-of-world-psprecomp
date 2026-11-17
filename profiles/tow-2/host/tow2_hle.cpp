@@ -3096,10 +3096,36 @@ void free_guard(psprecomp::Runtime &runtime, psprecomp::AllegrexContext &ctx) {
     recomp_unit_0313_entry(runtime, ctx, 69u, view);
 }
 
+void asset_start_trace(psprecomp::Runtime &runtime,
+                       psprecomp::AllegrexContext &ctx) {
+    static int logged = 0;
+    const std::uint32_t self = ctx.gpr[4];
+    if (logged < 8 && runtime.memory().contains(self, 4u)) {
+        const std::uint32_t vtable = runtime.memory().load32(self);
+        const std::uint32_t hook =
+            runtime.memory().contains(vtable + 180u, 4u)
+                ? runtime.memory().load32(vtable + 180u) : 0u;
+        std::cerr << "[tow2-asset] self=" << psprecomp::hex32(self)
+                  << " vtable=" << psprecomp::hex32(vtable)
+                  << " hook=" << psprecomp::hex32(hook)
+                  << " a1=" << psprecomp::hex32(ctx.gpr[5])
+                  << " a2=" << psprecomp::hex32(ctx.gpr[6])
+                  << " a3=" << psprecomp::hex32(ctx.gpr[7])
+                  << " a4=" << psprecomp::hex32(ctx.gpr[8]) << "\n";
+        ++logged;
+    }
+    auto view = runtime.memory().aot_fast_view();
+    recomp_unit_0301_entry(runtime, ctx, 372u, view);
+}
+
 void register_overrides(psprecomp::Runtime &runtime) {
     if (std::getenv("PSPRECOMP_TOW2_SKIP_INVALID_FREE") != nullptr) {
         runtime.register_function(0x08A7680Cu, &free_guard,
                                   "tow2_free_guard");
+    }
+    if (std::getenv("PSPRECOMP_TOW2_TRACE_ASSET_START") != nullptr) {
+        runtime.register_function(0x08A5FA28u, &asset_start_trace,
+                                  "tow2_asset_start_trace");
     }
 }
 
