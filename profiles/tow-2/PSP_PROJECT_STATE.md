@@ -89,6 +89,10 @@ need a hardware override.
 - `title/title.arc`: 1,369,296 bytes, version 4, 21 entries
   (`sky.ppt`, `layer_01.ppt`, ..., `lisence.ppt`). Entry names omit the
   `TitleArchive/` prefix used by the EBOOT string pool.
+- Entry payloads are **individual gzip members** (magic `1f 8b`, with the
+  original filename in the gzip header). The entry `size` field is the
+  **stored/compressed** length, not the uncompressed length; for example
+  `sky.ppt` stores 162,064 bytes and inflates to 522,272.
 - Title archive mount routine: **`0x088206D8`**. It passes
   `"title/title.arc"` (`0x08C23BB0`) and the mount point `"TitleArchive/"`
   (`0x08C23BC0`) to the VFS mount **`0x08A59210(manager, prefix, source)`**.

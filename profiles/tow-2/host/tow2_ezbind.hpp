@@ -21,10 +21,13 @@ namespace tow2 {
 //
 //   struct entry {
 //       u32 name_offset;  // absolute offset into the archive file
-//       u32 size;         // uncompressed byte size
+//       u32 size;         // stored byte size (entries are gzip members)
 //       u32 data_offset;  // absolute offset into the archive file
 //       u32 hash;         // engine hash (not CRC32 of data or of the name)
 //   };
+//
+// Every payload begins with the gzip magic `1f 8b`; `size` is the compressed
+// length, so the uncompressed length comes from inflating the member.
 //
 // EZBIND is a plain file container: nothing in the format depends on PSP
 // hardware, so the recompiled guest parser is valid as-is. This reader exists
