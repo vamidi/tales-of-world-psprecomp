@@ -10,6 +10,11 @@
 > **Not the canonical status file:** current verified state is in
 > [`PSP_PROJECT_STATE.md`](PSP_PROJECT_STATE.md). This file explains the
 > *method* and the *toolchain*.
+>
+> **Provisional time estimate:** roughly 4–8 focused hours for a first pass
+> through the labs and one small HLE fix, depending on your existing C++
+> experience. This is an estimate, not a measured pilot result; reaching a
+> playable ending is a separate, much larger effort.
 
 ---
 
@@ -90,6 +95,16 @@ The profile build also needs the Win32 GDI libraries for host font rendering.
 - `profiles/tow-1/generated/` is the checked-in recompiled corpus.
 - `profiles/tow-1/analysis/` and `profiles/tow-1/progress/` are local
   working areas.
+
+### Cleanup
+
+Frame dumps, `.png` conversions, and temporary logs can be deleted after a
+session. Do **not** delete `game/`, `generated/`, or the profile source as a
+cleanup step. A clean rebuild of the generated corpus is a deliberate,
+expensive action.
+
+The optional PPSSPP oracle is a separate emulator. It is useful for comparing
+expected behavior; it is not part of the generated profile build.
 
 ---
 
