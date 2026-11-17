@@ -472,6 +472,9 @@ std::uint32_t g_asset_owner = 0u;
 // One-shot: after the title frame entry has run, locate the registered asset
 // container (vtable 0x08C44B08) and invoke one of its virtual methods.
 int g_drive_container_countdown = -1;
+std::uint32_t g_watched_container = 0u;
+std::uint32_t g_last_container_state = 0xFFFFFFFFu;
+std::uint32_t g_state_prev_pc = 0u;
 
 constexpr std::uint32_t kIsolatedReturnSentinel = 0xDEADBEEFu;
 bool run_isolated_aot(psprecomp::Runtime &runtime,
@@ -523,48 +526,44 @@ void scene_caller_hook(psprecomp::Runtime &runtime,
         }
     }
     if (std::getenv("PSPRECOMP_TOW2_DRIVE_CONTAINER") != nullptr) {
-        if (dispatch_pc == 0x088206D8u && g_drive_container_countdown < 0) {
-            g_drive_container_countdown = 20000;
-        }
         if (g_drive_container_countdown > 0) {
             --g_drive_container_countdown;
         } else if (g_drive_container_countdown == 0) {
             g_drive_container_countdown = -1;
             constexpr std::uint32_t kVtable = 0x08C44B08u;
-            std::uint32_t container = 0u;
-            for (std::uint32_t address = 0x08D15000u; address < 0x0A000000u;
+            for (std::uint32_t address = 0x08D15000u; address < 0x08EC7000u;
                  address += 4u) {
                 if (!runtime.memory().contains(address, 4u)) continue;
                 if (runtime.memory().load32(address) == kVtable) {
-                    container = address;
+                    g_watched_container = address;
                     break;
                 }
             }
-            std::cerr << "[tow2-drive] container=" << psprecomp::hex32(container)
+            std::cerr << "[tow2-state] container="
+                      << psprecomp::hex32(g_watched_container)
+                      << " state="
+                      << psprecomp::hex32(
+                             g_watched_container != 0u
+                                 ? runtime.memory().load32(
+                                       g_watched_container + 1228u)
+                                 : 0u)
                       << "\n";
-            if (container != 0u) {
-                const std::uint32_t method =
-                    runtime.memory().load32(kVtable + 4u);
-                std::cerr << "[tow2-drive] method(+4)="
-                          << psprecomp::hex32(method) << " state="
-                          << psprecomp::hex32(
-                                 runtime.memory().load32(container + 1228u))
-                          << "\n";
-                psprecomp::AllegrexContext drive_ctx = ctx;
-                drive_ctx.set_gpr(4, container);
-                drive_ctx.set_gpr(29, ctx.gpr[29] - 0x2000u);
-                const bool drive_ok = run_isolated_aot(
-                    runtime, drive_ctx, method, kIsolatedReturnSentinel,
-                    500000, "container-load");
-                std::cerr << "[tow2-drive] ok=" << (drive_ok ? 1 : 0)
-                          << " ret=" << psprecomp::hex32(drive_ctx.gpr[2])
-                          << " state="
-                          << psprecomp::hex32(
-                                 runtime.memory().load32(container + 1228u))
-                          << "\n";
-            }
         }
     }
+    if (std::getenv("PSPRECOMP_TOW2_STATE_WATCH") != nullptr &&
+        g_watched_container != 0u &&
+        runtime.memory().contains(g_watched_container + 1228u, 8u)) {
+        const std::uint32_t state =
+            runtime.memory().load32(g_watched_container + 1228u);
+        if (state != g_last_container_state) {
+            std::cerr << "[tow2-state] " << psprecomp::hex32(g_last_container_state)
+                      << " -> " << psprecomp::hex32(state)
+                      << " after_pc=" << psprecomp::hex32(g_state_prev_pc)
+                      << " uid=" << thread_uid << "\n";
+            g_last_container_state = state;
+        }
+    }
+    g_state_prev_pc = dispatch_pc;
 }
 
 void scene_watch_hook(psprecomp::Runtime &runtime,

@@ -263,6 +263,41 @@ Next: do not call `+4`. Identify the owner-side load call (the owner
 `0x08DA1560` is the object whose virtual dispatch advances `+1228` from 0 to
 3), or call a non-constructor slot (`+8`/`+104`) once the state is settled.
 
+### `+1228` is an animation frame index, not a load state (2026-11-17)
+
+State watching (`PSPRECOMP_TOW2_STATE_WATCH=1`, container located by vtable
+scan) shows a monotonic counter:
+
+```
+[tow2-state] 0x00000000 -> 0x00000001 after_pc=0x0881F404
+[tow2-state] 0x00000001 -> 0x00000002 after_pc=0x0881F404
+...                                        (wraps at 31)
+```
+
+`0x0881F404` is an animation tick:
+
+```
+0x0881F404:
+    if (*(u8*)(this+1232) == 0) return;
+    frame = (*(u32*)(this+1228) + 1) & 31;
+    *(u32*)(this+1228) = frame;                 // 0..31
+    ... interpolate using frame and this+432 ...
+```
+
+So the container at `owner+12032` is an **animation/sprite player**:
+- `+1228` = current frame (0..31)
+- `+1232` = animation enabled
+- `+104` (`0x0881F4E8`) clears the five sprite records
+- `+4` is the constructor/reset that faulted when driven
+
+There is no asset-load virtual in this container. The `ppt`/`eai` pairs are
+animation frames referencing textures loaded elsewhere (sprite texture path),
+which is why driving `+4` never produced a `TitleArchive` open.
+
+Next: inspect the sprite constructor/texture setter (`0x08A5F1A4`,
+`0x08A5EF88`, `0x08A5FA28` → `0x08A5FD30`) for the texture source call, or
+find the texture manager that consumes the `ppt` name from the pair.
+
 ## Title scene ordering (2026-11-17)
 
 Goal: start the title mount before `user_main` resumes, then observe
