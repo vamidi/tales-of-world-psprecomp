@@ -208,6 +208,35 @@ the title object's `0x0881EC38` state machine / `0x0881C224` load path) and
 drive that transition, then re-check `0x08A59378`/`0x08A7384C` and
 `[tow2][ezbind]`.
 
+### `0x0881C224` / update trace (2026-11-17)
+
+- `0x0881C224` is a **registration method**, not a loader. It has no direct
+  callers (virtual only). It:
+  1. `0x0881BFB0(this)`
+  2. `scene = 0x08AC535C()`
+  3. `[scene_vtable+176](scene, this)`
+  4. `[scene_vtable+176](scene, this+240)`
+  5. `0x0881F5B0(this+12032)` — build the asset list
+  6. `[scene_vtable+176](scene, this+12032)`
+  7. `L_0881D768(this+13280)`
+  8. `[scene_vtable+176](scene, this+13280)`
+  9. `0x0881FBB0(this+12032, this+13280)` (sets `[+12032+1224]`)
+- `0x0881EC38` is the epilogue of the per-frame update `0x0881E79C`, not a
+  state switch. That function reads bytes at `0x08CAE068` and `0x08CAE070`
+  (both `1` at the trigger) and dispatches virtuals; no state variable.
+- The object addressed as `g_title_object + 12032` has **vtable 0** at both
+  trigger and stop time. So the registered `this` is *not* `0x08D51A70`; the
+  asset container belongs to a different scene-registered object.
+- Consequence: the load branch cannot be driven by poking
+  `g_title_object+12032`; its owner must be taken from the scene registration
+  (`[scene_vtable+176]` call at `0x0881C248`/`0x0881C268`).
+- Verification in this configuration is still negative: `0x08A59378` (VFS
+  find) and `0x08A7384C` (open) are 0; no `TitleArchive` open.
+
+Next: capture the `this` argument of `0x0881C224` when the scene manager
+invokes it, dump that object's `+12032` container (vtable/state), and drive
+its load virtual before the sprite update.
+
 ## Title scene ordering (2026-11-17)
 
 Goal: start the title mount before `user_main` resumes, then observe

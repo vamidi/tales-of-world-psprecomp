@@ -989,6 +989,32 @@ void delete_thread(psprecomp::Runtime &runtime, psprecomp::AllegrexContext &ctx)
                 }
             }
         }
+        if (std::getenv("PSPRECOMP_TOW2_TITLE_VTABLE") != nullptr &&
+            title_object != 0u &&
+            runtime.memory().contains(title_object + 12032u + 4u, 4u)) {
+            const std::uint32_t container = title_object + 12032u;
+            const std::uint32_t vtable = runtime.memory().load32(container);
+            std::cerr << "[tow2-vt] container=" << psprecomp::hex32(container)
+                      << " vtable=" << psprecomp::hex32(vtable)
+                      << " state="
+                      << psprecomp::hex32(
+                             runtime.memory().load32(container + 1228u))
+                      << "\n";
+            std::cerr << "[tow2-flags] b68="
+                      << static_cast<unsigned>(runtime.memory().load8(0x08CAE068u))
+                      << " b70="
+                      << static_cast<unsigned>(runtime.memory().load8(0x08CAE070u))
+                      << " w60="
+                      << psprecomp::hex32(runtime.memory().load32(0x08CAE060u))
+                      << "\n";
+            for (std::uint32_t index = 0; index < 32u; ++index) {
+                if (!runtime.memory().contains(vtable + index * 4u, 4u)) break;
+                std::cerr << "[tow2-vt] +" << index * 4u << " = "
+                          << psprecomp::hex32(
+                                 runtime.memory().load32(vtable + index * 4u))
+                          << "\n";
+            }
+        }
         if (std::getenv("PSPRECOMP_TOW2_SCENE_START") != nullptr) {
             // Real scene-change path used by the title script at 0x0897C684:
             //   scene = 0x08AC5428();
@@ -3011,6 +3037,26 @@ void report_threads() {
                       << psprecomp::hex32(g_mpeg_memory->load32(base + 56u))
                       << " lock="
                       << psprecomp::hex32(g_mpeg_memory->load32(base + 576u))
+                      << "\n";
+        }
+    }
+    if (g_mpeg_memory != nullptr &&
+        std::getenv("PSPRECOMP_TOW2_TITLE_VTABLE") != nullptr &&
+        g_title_object != 0u &&
+        g_mpeg_memory->contains(g_title_object + 12036u, 4u)) {
+        const std::uint32_t container = g_title_object + 12032u;
+        const std::uint32_t vtable = g_mpeg_memory->load32(container);
+        std::cerr << "[tow2-vt] final container=" << psprecomp::hex32(container)
+                  << " vtable=" << psprecomp::hex32(vtable)
+                  << " state="
+                  << psprecomp::hex32(g_mpeg_memory->load32(container + 1228u))
+                  << "\n";
+        for (std::uint32_t index = 0;
+             index < 32u && vtable != 0u &&
+             g_mpeg_memory->contains(vtable + index * 4u, 4u); ++index) {
+            std::cerr << "[tow2-vt] +" << index * 4u << " = "
+                      << psprecomp::hex32(
+                             g_mpeg_memory->load32(vtable + index * 4u))
                       << "\n";
         }
     }
