@@ -491,6 +491,20 @@ void scene_caller_hook(psprecomp::Runtime &,
                   << " a1=" << psprecomp::hex32(ctx.gpr[5])
                   << " uid=" << thread_uid << "\n";
     }
+    if (dispatch_pc == 0x08817298u || dispatch_pc == 0x08813874u ||
+        dispatch_pc == 0x08814460u || dispatch_pc == 0x0881460Cu ||
+        dispatch_pc == 0x08813F00u) {
+        static std::uint64_t seen = 0;
+        if (seen < 40u) {
+            ++seen;
+            std::cerr << "[tow2-scene-caller] pc="
+                      << psprecomp::hex32(dispatch_pc)
+                      << " ra=" << psprecomp::hex32(ctx.gpr[31])
+                      << " a0=" << psprecomp::hex32(ctx.gpr[4])
+                      << " a1=" << psprecomp::hex32(ctx.gpr[5])
+                      << " uid=" << thread_uid << "\n";
+        }
+    }
 }
 
 void scene_watch_hook(psprecomp::Runtime &runtime,
@@ -961,6 +975,44 @@ void delete_thread(psprecomp::Runtime &runtime, psprecomp::AllegrexContext &ctx)
                 runtime.memory().store8(scene_object + 0x3C80u, 1u);
                 std::cerr << "[tow2-title] forced scene active=1\n";
             }
+        }
+        if (const char *scene_id_text = std::getenv("PSPRECOMP_TOW2_SCENE_ID")) {
+            if (scene_object != 0u &&
+                runtime.memory().contains(scene_object + 4u, 2u)) {
+                char *end = nullptr;
+                const unsigned long value = std::strtoul(scene_id_text, &end, 0);
+                if (end != scene_id_text && *end == '\0' && value < 28u) {
+                    runtime.memory().store16(
+                        scene_object + 4u, static_cast<std::uint16_t>(value));
+                    std::cerr << "[tow2-title] forced scene id=" << value
+                              << "\n";
+                }
+            }
+        }
+        if (std::getenv("PSPRECOMP_TOW2_SCENE_START") != nullptr) {
+            // Real scene-change path used by the title script at 0x0897C684:
+            //   scene = 0x08AC5428();
+            //   0x08814628(scene, 1);
+            psprecomp::AllegrexContext manager_ctx = ctx;
+            manager_ctx.set_gpr(4, 0u);
+            manager_ctx.set_gpr(29, ctx.gpr[29] - 0x1000u);
+            const bool manager_ok = run_isolated_aot(
+                runtime, manager_ctx, 0x08AC5428u, kIsolatedReturnSentinel,
+                200000, "scene-manager");
+            const std::uint32_t scene_manager = manager_ctx.gpr[2];
+            std::cerr << "[tow2-scene] manager ok=" << (manager_ok ? 1 : 0)
+                      << " value=" << psprecomp::hex32(scene_manager) << "\n";
+            psprecomp::AllegrexContext start_ctx = ctx;
+            start_ctx.set_gpr(4, scene_manager);
+            start_ctx.set_gpr(5, 1u);
+            start_ctx.set_gpr(29, ctx.gpr[29] - 0x4000u);
+            const bool start_ok = run_isolated_aot(
+                runtime, start_ctx, 0x08814628u, kIsolatedReturnSentinel,
+                2000000, "scene-start");
+            std::cerr << "[tow2-scene] start(1) ok=" << (start_ok ? 1 : 0)
+                      << " ret=" << psprecomp::hex32(start_ctx.gpr[2])
+                      << " pc=" << psprecomp::hex32(start_ctx.pc) << "\n";
+            log_scene_state(runtime, "after-start");
         }
 
         if (title_object != 0u &&
@@ -3053,8 +3105,9 @@ void register_hle(psprecomp::Runtime &runtime, std::uint32_t user_arena_start) {
     g_partitions.next_address = (user_arena_start + 0xFFu) & ~0xFFu;
     g_module_end = user_arena_start;
     if (std::getenv("PSPRECOMP_TOW2_SCAN_POINTERS") != nullptr) {
-        const std::array<std::uint32_t, 4> targets{
-            0x088206D8u, 0x0896FEC4u, 0x08970A00u, 0x0881F5B0u};
+        const std::array<std::uint32_t, 10> targets{
+            0x088206D8u, 0x0896FEC4u, 0x08970A00u, 0x0881F5B0u, 0x08817298u,
+            0x08813874u, 0x08814848u, 0x08817AD0u, 0x08814460u, 0x08818FB4u};
         for (std::uint32_t address = 0x08804000u;
              address + 4u <= user_arena_start; address += 4u) {
             if (!runtime.memory().contains(address, 4u)) continue;

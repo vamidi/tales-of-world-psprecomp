@@ -117,6 +117,44 @@ need a hardware override.
   - `PSPRECOMP_TOW2_TITLE_MOUNT` / `PSPRECOMP_TOW2_VFS_FIND` currently do not
     complete (`mount ok=0`) and corrupt guest state; keep them off.
 
+## Scene-change path (2026-11-17)
+
+Traced the id field and the real scene-start API.
+
+- Scene id: `u16` at `scene+4` on the object at `[0x08D14F2C]`.
+  - `0xFFFF` means "no scene".
+  - Valid ids are `0..27`: `0x0881460C(scene)` returns the id when
+    `< 28`, else `-1`.
+  - `0x08814460(scene)` returns `scene+4` when the id is not `0xFFFF`, else
+    `0`. This is the gate that makes `0x08813874` exit early.
+- Id setter: `0x08817298(dst, descriptor)` stores
+  `[dst+4] = 0x08818FB4(descriptor)` and copies the descriptor name; it is the
+  only non-reset writer of `scene+4`. `0x08818FB4` reads `u16 [descriptor+0]`
+  when `u32 [descriptor+728]` is 1 or 2. This function has **no static
+  caller** and never runs in the current flow.
+- Real scene start: **`0x08814628(scene, mode)`**.
+  - The title script calls it at `0x0897C684` with `mode=1`, immediately after
+    `scene = 0x08AC5428()`.
+  - It requires `[scene+15348] != 0`; otherwise it returns `-1` and leaves the
+    id at `0xFFFF`.
+  - `[scene+15348]` is the live scene object, set by
+    `0x08814AEC(scene, p5, p6, p7, p8, p9)` together with `+15340`,
+    `+15344`, `+15352`, `+15356`. The registration path runs at
+    `0x08810194`..`0x088101E8` from a descriptor held in `gpr18`.
+- Forcing `[scene+4] = 0` (`PSPRECOMP_TOW2_SCENE_ID=0`) does get
+  `0x08813874` past the gate, but the state2 thread then faults in unit 0318
+  (`0x00000001`) because the scene struct is empty after the reset.
+- `PSPRECOMP_TOW2_SCENE_START=1` calls `0x08AC5428()` then
+  `0x08814628(manager, 1)`. Verified result:
+  `start(1) ok=1 ret=0xFFFFFFFF`, scene id still `0xFFFF`.
+- Verification: no `TitleArchive/...` request in any configuration; only
+  `title/title.pmf` is opened.
+
+Next step: populate the scene via `0x08814AEC` (the
+`0x08810194` registration path) before `0x08814628`, or find the script call
+that sets `[scene+15348]`, then re-run the start and watch for
+`TitleArchive` opens.
+
 ## Title scene ordering (2026-11-17)
 
 Goal: start the title mount before `user_main` resumes, then observe
