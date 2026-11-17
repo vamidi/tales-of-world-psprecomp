@@ -117,6 +117,44 @@ need a hardware override.
   - `PSPRECOMP_TOW2_TITLE_MOUNT` / `PSPRECOMP_TOW2_VFS_FIND` currently do not
     complete (`mount ok=0`) and corrupt guest state; keep them off.
 
+## Title scene ordering (2026-11-17)
+
+Goal: start the title mount before `user_main` resumes, then observe
+`TitleArchive/...` requests.
+
+- Ordering control: `PSPRECOMP_TOW2_TITLE_MOUNT_THREAD=1` plus
+  `PSPRECOMP_TOW2_HOLD_USER_MAIN=1` marks the `user_main` thread Delayed with
+  an infinite deadline and removes it from the ready queue. Verified state at
+  the dispatch limit:
+  `uid=1 user_main state=delayed`, `uid=10 (mount) state=running`.
+  No guest fault occurs in this configuration.
+- Scheduler fix: semaphore wake order is now **priority-ordered** (highest
+  priority first, FIFO within equal priority) for both `sceKernelSignalSema`
+  and the vblank model. The previous FIFO wake could resume `user_main`
+  (63) ahead of the mount thread (17).
+- Result: the mount runs, but **no `TitleArchive/...` asset is requested**.
+  `PSPRECOMP_FILE_DIAG=1` shows only `title/title.pmf`; no `.arc` open and no
+  `[tow2][ezbind]` line. A 2,000,000,000-dispatch run ends at
+  `0x08A5FBCC` with the same behaviour.
+- Evidence that `0x088206D8` is a **per-frame title entry**, not a one-shot
+  mount:
+  - `0x08A59210` (VFS mount) executes a handful of times, then stops.
+  - The thread then loops `0x08A5FB98 -> 0x08A5FBBC -> 0x08A5FBCC`, calling
+    `0x08A774B0`, the GE draw stub `0x08A76ED8`, and returning through
+    `0x08AB8C30`.
+  - `0x08A703D8` (queue-lock + signal + sleep) and `0x08A57DB0` (VFS pump)
+    each execute tens of thousands of times in that loop.
+  - The scene object `[0x08D9B920]` still has `+4 = 0xFFFF` (movie scene), so
+    the title state machine never advances.
+- `0x088206D8` is referenced from the module's `user_main` descriptor block at
+  `0x08C71E00` (`0x4000` stack, `0x28` priority, `"user_main"`), not from a
+  scene table. It is the main thread's frame/entry callback.
+- Conclusion: the correct ordering is **scene switch first, then the per-frame
+  callback**. Running the frame callback in a fresh thread against scene
+  `0xFFFF` cannot produce asset requests. Next step: find the scene-change
+  path that moves `[scene+4]` off `0xFFFF` and drive that instead.
+
+
 ## Title mount trace: first dead-end in `0x088206D8` (2026-11-17)
 
 - `0x088206D8` has **no unresolvable call**. Executed synchronously it runs

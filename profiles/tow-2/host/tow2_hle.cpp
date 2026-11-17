@@ -136,6 +136,9 @@ std::int32_t g_next_semaphore_uid = 0x200;
 // PSPRECOMP_TOW2_NO_VBLANK_SEMA=1.
 std::int32_t g_sleep_semaphore_uid = -1;
 std::uint64_t g_next_vblank_us = 16683u;
+// Set by the title mount-thread diagnostic so the sleep-semaphore handshake
+// does not wake user_main before the mount has completed.
+std::int32_t g_mount_thread_uid = -1;
 
 struct CallbackRecord {
     std::string name;
@@ -573,8 +576,32 @@ void signal_sleep_semaphore_for_vblank() {
     if (g_sleep_semaphore_uid < 0) return;
     const auto semaphore = g_semaphores.find(g_sleep_semaphore_uid);
     if (semaphore == g_semaphores.end() || semaphore->second.waiters.empty()) return;
-    SemaphoreWaiter waiter = semaphore->second.waiters.front();
-    semaphore->second.waiters.erase(semaphore->second.waiters.begin());
+    // PSP semaphore queues are priority-ordered: wake the highest-priority
+    // waiter, not the oldest. FIFO here woke user_main (priority 63) before the
+    // title mount thread (priority 17) and re-entered it out of order.
+    std::size_t best = 0;
+    int best_priority = std::numeric_limits<int>::max();
+    const bool hold_main = g_mount_thread_uid >= 0 &&
+        std::getenv("PSPRECOMP_TOW2_HOLD_MAIN_SEMA") != nullptr;
+    for (std::size_t i = 0; i < semaphore->second.waiters.size(); ++i) {
+        const auto thread =
+            g_scheduler.threads.find(semaphore->second.waiters[i].uid);
+        if (hold_main && thread != g_scheduler.threads.end() &&
+            thread->second.name == "user_main") {
+            continue;
+        }
+        const int priority = thread == g_scheduler.threads.end()
+            ? std::numeric_limits<int>::max()
+            : static_cast<int>(thread->second.priority);
+        if (priority < best_priority) {
+            best_priority = priority;
+            best = i;
+        }
+    }
+    if (best_priority == std::numeric_limits<int>::max()) return;
+    SemaphoreWaiter waiter = semaphore->second.waiters[best];
+    semaphore->second.waiters.erase(semaphore->second.waiters.begin() +
+                                    static_cast<std::ptrdiff_t>(best));
     psprecomp::AllegrexContext context = waiter.context;
     context.set_gpr(2, 0u);
     enqueue_thread(waiter.uid, context);
@@ -1016,6 +1043,26 @@ void delete_thread(psprecomp::Runtime &runtime, psprecomp::AllegrexContext &ctx)
                     start_thread(runtime, start_ctx);
                     std::cerr << "[tow2-title] mount thread uid=" << mount_uid
                               << "\n";
+                    g_mount_thread_uid = mount_uid;
+                    if (std::getenv("PSPRECOMP_TOW2_HOLD_USER_MAIN") != nullptr) {
+                        for (auto &[thread_uid, thread] : g_scheduler.threads) {
+                            if (thread.name != "user_main") continue;
+                            thread.state = ThreadState::Delayed;
+                            thread.delay_until_us =
+                                std::numeric_limits<std::uint64_t>::max();
+                            thread.delay_sequence = g_scheduler.next_sequence++;
+                            g_scheduler.ready.erase(
+                                std::remove_if(
+                                    g_scheduler.ready.begin(),
+                                    g_scheduler.ready.end(),
+                                    [thread_uid = thread_uid](const ReadyEntry &entry) {
+                                        return entry.uid == thread_uid;
+                                    }),
+                                g_scheduler.ready.end());
+                            std::cerr << "[tow2-sched] held user_main uid="
+                                      << thread_uid << " until mount completes\n";
+                        }
+                    }
                 } else {
                     std::cerr << "[tow2-title] mount thread create failed="
                               << psprecomp::hex32(mount_thread_ctx.gpr[2])
@@ -2686,17 +2733,57 @@ void signal_semaphore(psprecomp::Runtime &runtime, psprecomp::AllegrexContext &c
     semaphore->second.value = std::min(semaphore->second.maximum,
                                        semaphore->second.value + count);
 
+    // Diagnostic ordering: when the title mount thread ticks the sleep
+    // semaphore, keep user_main asleep so the mount and its asset dispatch
+    // complete first. The vblank model still wakes the highest-priority
+    // sleeper, which is the mount thread.
+    if (std::getenv("PSPRECOMP_TOW2_HOLD_MAIN_SEMA") != nullptr &&
+        g_mount_thread_uid >= 0 &&
+        uid == g_sleep_semaphore_uid &&
+        g_scheduler.current_uid == g_mount_thread_uid) {
+        static bool logged = false;
+        if (!logged) {
+            logged = true;
+            std::cerr << "[tow2-sched] hold user_main: mount thread signals "
+                         "sleep semaphore\n";
+        }
+        ctx.set_gpr(2, 0u);
+        return;
+    }
+
     auto waiter = semaphore->second.waiters.begin();
     while (waiter != semaphore->second.waiters.end()) {
-        if (semaphore->second.value < waiter->count) {
-            ++waiter;
-            continue;
+        // PSP semaphores wake the highest-priority waiter that fits.
+        std::size_t best = semaphore->second.waiters.size();
+        int best_priority = std::numeric_limits<int>::max();
+        const bool hold_main = g_mount_thread_uid >= 0 &&
+            std::getenv("PSPRECOMP_TOW2_HOLD_MAIN_SEMA") != nullptr;
+        for (std::size_t i = 0; i < semaphore->second.waiters.size(); ++i) {
+            const SemaphoreWaiter &candidate = semaphore->second.waiters[i];
+            if (semaphore->second.value < candidate.count) continue;
+            const auto thread = g_scheduler.threads.find(candidate.uid);
+            if (hold_main && thread != g_scheduler.threads.end() &&
+                thread->second.name == "user_main") {
+                continue;
+            }
+            const int priority = thread == g_scheduler.threads.end()
+                ? std::numeric_limits<int>::max()
+                : static_cast<int>(thread->second.priority);
+            if (priority < best_priority) {
+                best_priority = priority;
+                best = i;
+            }
         }
-        semaphore->second.value -= waiter->count;
-        psprecomp::AllegrexContext context = waiter->context;
+        if (best == semaphore->second.waiters.size()) break;
+        SemaphoreWaiter selected = semaphore->second.waiters[best];
+        semaphore->second.value -= selected.count;
+        psprecomp::AllegrexContext context = selected.context;
         context.set_gpr(2, 0u);
-        enqueue_thread(waiter->uid, context);
-        waiter = semaphore->second.waiters.erase(waiter);
+        enqueue_thread(selected.uid, context);
+        semaphore->second.waiters.erase(
+            semaphore->second.waiters.begin() +
+            static_cast<std::ptrdiff_t>(best));
+        waiter = semaphore->second.waiters.begin();
     }
     ctx.set_gpr(2, 0u);
 }
@@ -2745,6 +2832,7 @@ void initialize_scheduler(psprecomp::Runtime &runtime) {
     g_scheduler = Scheduler{};
     g_scheduler.next_stack_top = kUserRamTop - kModuleStackSize;
     g_sleep_semaphore_uid = -1;
+    g_mount_thread_uid = -1;
     g_next_vblank_us = 16683u;
 
     ThreadRecord module{};
@@ -2824,13 +2912,31 @@ void report_movie_state() {
 } // namespace
 
 void report_threads() {
-    std::cerr << "[tow2] thread states:\n";
-    for (const auto &[uid, thread] : g_scheduler.threads) {
+    std::cerr << "[tow2] thread states:\n";    for (const auto &[uid, thread] : g_scheduler.threads) {
         std::cerr << "  uid=" << uid << " name=\"" << thread.name
                   << "\" state=" << thread_state_name(thread.state)
                   << " priority=" << thread.priority
                   << " pc=" << psprecomp::hex32(thread.context.pc)
                   << " sp=" << psprecomp::hex32(thread.context.gpr[29]) << "\n";
+    }
+    std::cerr << "[tow2] ready:";
+    for (const ReadyEntry &entry : g_scheduler.ready) {
+        std::cerr << " " << entry.uid;
+    }
+    std::cerr << "\n";
+    if (g_mpeg_memory != nullptr &&
+        std::getenv("PSPRECOMP_TOW2_VFS_DUMP") != nullptr) {
+        for (const std::uint32_t base : {0x08D4F0C0u, 0x08D4F120u}) {
+            if (!g_mpeg_memory->contains(base, 0x260u)) continue;
+            std::cerr << "[tow2-vfs] base=" << psprecomp::hex32(base)
+                      << " head=" << psprecomp::hex32(g_mpeg_memory->load32(base))
+                      << " sentinel=" << psprecomp::hex32(base + 4u)
+                      << " sema="
+                      << psprecomp::hex32(g_mpeg_memory->load32(base + 56u))
+                      << " lock="
+                      << psprecomp::hex32(g_mpeg_memory->load32(base + 576u))
+                      << "\n";
+        }
     }
     std::cerr << "[tow2] semaphores:\n";
     for (const auto &[uid, semaphore] : g_semaphores) {
@@ -2946,6 +3052,40 @@ void register_hle(psprecomp::Runtime &runtime, std::uint32_t user_arena_start) {
     g_partitions = PartitionTable{};
     g_partitions.next_address = (user_arena_start + 0xFFu) & ~0xFFu;
     g_module_end = user_arena_start;
+    if (std::getenv("PSPRECOMP_TOW2_SCAN_POINTERS") != nullptr) {
+        const std::array<std::uint32_t, 4> targets{
+            0x088206D8u, 0x0896FEC4u, 0x08970A00u, 0x0881F5B0u};
+        for (std::uint32_t address = 0x08804000u;
+             address + 4u <= user_arena_start; address += 4u) {
+            if (!runtime.memory().contains(address, 4u)) continue;
+            const std::uint32_t value = runtime.memory().load32(address);
+            bool match = false;
+            for (const std::uint32_t target : targets) {
+                if (value == target) match = true;
+            }
+            if (!match) continue;
+            std::cerr << "[tow2-ptr] " << psprecomp::hex32(value) << " at "
+                      << psprecomp::hex32(address) << " words:";
+            for (std::int32_t i = -4; i <= 4; ++i) {
+                const std::uint32_t at = static_cast<std::uint32_t>(
+                    static_cast<std::int32_t>(address) + i * 4);
+                if (!runtime.memory().contains(at, 4u)) continue;
+                std::cerr << " " << (i == 0 ? "*" : "")
+                          << psprecomp::hex32(runtime.memory().load32(at));
+            }
+            std::cerr << "\n";
+        }
+        std::cerr << "[tow2-ptr] table 0x08C71E00..0x08C71F00:\n";
+        for (std::uint32_t address = 0x08C71E00u; address < 0x08C71F00u;
+             address += 0x10u) {
+            std::cerr << "[tow2-ptr] " << psprecomp::hex32(address) << ":";
+            for (std::uint32_t offset = 0; offset < 0x10u; offset += 4u) {
+                std::cerr << " " << psprecomp::hex32(
+                    runtime.memory().load32(address + offset));
+            }
+            std::cerr << "\n";
+        }
+    }
     load_libfile_module(runtime,
         runtime.game_root() / "PSP_GAME/USRDIR/module/libfile.prx");
     initialize_scheduler(runtime);
@@ -3125,6 +3265,16 @@ void register_hle(psprecomp::Runtime &runtime, std::uint32_t user_arena_start) {
         [](psprecomp::Runtime &rt, psprecomp::AllegrexContext &ctx) { wakeup_thread(rt, ctx); });
     runtime.register_hle("ThreadManForUser", 0x82826F70u, // sceKernelSleepThreadCB
         [](psprecomp::Runtime &rt, psprecomp::AllegrexContext &ctx) {
+            // Spin only the title mount thread: it is created at the movie
+            // handoff, so boot is unaffected. This keeps it runnable (priority
+            // 17) and prevents the scheduler from resuming user_main (63)
+            // before the mount and its asset dispatch have run.
+            if (g_mount_thread_uid >= 0 &&
+                g_scheduler.current_uid == g_mount_thread_uid &&
+                std::getenv("PSPRECOMP_TOW2_MOUNT_SPIN") != nullptr) {
+                ctx.set_gpr(2, 0u);
+                return;
+            }
             if (std::getenv("PSPRECOMP_TOW2_SLEEP_CB_NOW") != nullptr) {
                 delay_current_thread(rt, ctx, 1000u);
                 return;
