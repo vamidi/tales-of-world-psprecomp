@@ -328,6 +328,33 @@ The mount is **valid**; the earlier VFS check used the wrong lookup API.
 Next: find the virtual-path resolver that compares the inline prefix at
 `node+0x80`, and the sprite texture setter that feeds it the `ppt` name.
 
+### Sprite setter + prefix resolver (2026-11-17)
+
+- Sprite vtable `0x08C44078` (dumped at runtime):
+  ```
+  +0  0x08AC53E4   +4  0x08AC53F4   +8  0x08A6158C   +12 0x08A61600
+  +16 0x08A61644   +20 0x08A5DBD0   +24 0x08A5DBD8   +28 0x08A5DC28
+  +32 0x08A5DC30   +36 0x08A5FAD4   +40 0x08A5FA44   +44 0x08A5FA74
+  +48 0x08A5FAA4   +52 0x08A5DC58   +56 0x08A5DC50   +60 0x08A5DB40
+  +64 0x08A5DB94   +68 0x08A61A38   +72 0x08A616D4   +76 0x08A61724
+  ```
+- The asset-list builder's per-sprite call is `[sprite_vtable+36]` =
+  **`0x08A5FAD4(sprite, 64, 16)`**. It is a thin forwarder to
+  `0x08A5DBBC` + `[sprite_vtable+180]`; it is **not** a texture bind.
+- The sprite record at `container+576` (stride 128) holds only:
+  `[0]=vtable 0x08C44078`, `[1]=container`, UV pairs at `+16`/`+20`
+  (`0x58/0x98/0xD8/0x118/0x158`, `0xF8`). No texture or name pointer is
+  assigned in the fields that were dumped.
+- The mount entry's prefix is inline: `+0x80` = 13, `+0x84` = `"TitleArchive/"`.
+  The resolver that compares this inline prefix is **not** `0x08A59378`
+  (that compares `[node+8]`, the source path).
+- Verification: `PSPRECOMP_FILE_DIAG=1` still shows only `title/title.pmf`;
+  no `TitleArchive` request.
+
+Next: locate the function that walks the mount list and compares the inline
+prefix at `node+0x80`, and find where the sprite's texture/name field is
+written (not the `+36` update call).
+
 ## Title scene ordering (2026-11-17)
 
 Goal: start the title mount before `user_main` resumes, then observe

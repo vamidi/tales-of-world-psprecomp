@@ -627,7 +627,7 @@ void scene_caller_hook(psprecomp::Runtime &runtime,
                                     g_watched_container + 576u + sprite * 128u;
                                 std::cerr << "[tow2-sprite] " << sprite << " @"
                                           << psprecomp::hex32(base) << ":";
-                                for (std::uint32_t offset = 0; offset < 32u;
+                                for (std::uint32_t offset = 0; offset < 128u;
                                      offset += 4u) {
                                     std::cerr << " "
                                               << psprecomp::hex32(
@@ -635,6 +635,19 @@ void scene_caller_hook(psprecomp::Runtime &runtime,
                                                          base + offset));
                                 }
                                 std::cerr << "\n";
+                                if (sprite == 0u) {
+                                    const std::uint32_t vt =
+                                        runtime.memory().load32(base);
+                                    for (std::uint32_t index = 0; index < 20u;
+                                         ++index) {
+                                        std::cerr << "[tow2-sprite] vt+"
+                                                  << index * 4u << " = "
+                                                  << psprecomp::hex32(
+                                                         runtime.memory().load32(
+                                                             vt + index * 4u))
+                                                  << "\n";
+                                    }
+                                }
                             }
                             for (const std::uint32_t field : {64u, 68u}) {
                                 const std::uint32_t object =
