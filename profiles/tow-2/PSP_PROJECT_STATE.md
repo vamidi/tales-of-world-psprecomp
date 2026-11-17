@@ -56,27 +56,73 @@ Scripts: `profiles\tow-2\scripts\build.bat`, `generate.bat`, `play.bat`.
 
 Last verified result:
 
-- `Tow2Native` builds and reaches first dispatch.
-- Opening movie: H.264 480x272 + Atrac3+ PCM decode; visible frames.
-- Movie task now returns `0`; ring-buffer packet cap fixed the movie-end
-  equality (`+18 == +30 == 0xD06000`).
-- Post-movie title transition is still blocked; `title.arc` is not opened.
-- Title trigger diagnostic creates the title renderer child, but it crashes at
-  `0x08A76EE8` with `a0=5` treated as a pointer (`s0=0x08DA1A70`).
+- `Tow2Native` builds; the opening movie decodes and returns `0`.
+- The title-renderer GE crash is fixed by a profile-local no-op at
+  `0x08A76ED8` (null GE context).
+- Scene-manager writers traced: `0x08817AD0` initializer,
+  `0x08814848` reset, `0x08AA33C0` memset.
+- Missing seeds `0x0896FFB8` and `0x08970A00` were added via
+  `PSPRECOMP_EXTRA_FUNCTIONS`; corpus regenerated (5 units) and rebuilt.
+- The title task entry was corrected to `0x0896FFB8`.
+- The title task still does not reach `0x08970A00`; it stalls in
+  `sceKernelSleepThreadCB` (`0x08A703D8`). `title.arc` is not opened.
 
 ## Current diagnosis
 
-- Observation: after movie cleanup, `FileReadingTask`/`user_main`/
-  `cSoundEffect` settle, but the title task does not open `title.arc`.
-- Layer: profile HLE/scheduler and title task argument contract, not the
-  generated corpus.
-- Hypothesis: the title task's child receive contract is wrong: the child is
-  passed mode/index `5` where it expects the title object/state pointer.
-- Evidence: title object global `[0x08D14F10] = 0x08D51A70`; trigger clears
-  `[obj+0x4F68]`, runs `0x08A4B0FC`, starts title task `0x08970000`; child
-  crashes at `0x08A76EE8`.
-- Next test: inspect `0x08A76EE8` and the title object/task argument contract,
-  fix the child argument/state, then rerun until `title.arc` opens.
+- Observation: after the missing seeds and a 1 ms `sceKernelSleepThreadCB`
+  diagnostic delay, the title task now runs the title-screen loop.
+  `0x08A77560` is called from `0x08A780F0` with uid 1/8; the title task is
+  doing actor updates, not scene activation.
+- Layer: profile HLE title-task pacing and title-screen path.
+- Evidence: title-task entry `0x0896FFB8`; uid 10 state `running`,
+  pc `0x08A77560`; caller `ra=0x08A780F0`; `0x08970A00`, `0x08814BBC`, and
+  `0x08817E68` still have zero hits.
+- Scene state: `[0x08D14F2C] = 0x08D9B920`, `[+4] = 0xFFFF`; the scene-active
+  byte `[scene+0x3C80]` is forced to 1.
+- `0x08970A00` has **no direct caller** in the regenerated corpus, and a
+  runtime scan of guest memory at movie cleanup found **no pointer** to it.
+  The activation function is orphaned from the current title path.
+- `0x08A780F0` / `0x08A77560` are title-screen actor updates, not the loader.
+- The title task currently runs the title-screen loop without the activation.
+- Direct entry at `0x08970A00` with `v0=scene` crashes at `0x00000000` in
+  unit 0018: it is a **mid-function block**, not a valid standalone entry.
+  The invalid activation trampoline was removed.
+- `0x08970000` is a mid-function block reached by fall-through from
+  `0x0896FFFC`, not an entry.
+- `0x0896FFB8` is a loop label inside the same function, not the prologue.
+  The real title-task function starts **before `0x0896FF00`**.
+- `0x08970A00` is a separate block/function with no caller.
+- The real prologue is **`0x0896FEC4`** (`addiu sp,-0x50`, saves
+  `ra`/`s0`–`s5`); it was added as an extra function seed and the corpus was
+  regenerated/rebuilt.
+- The native `title_creator_thread_entry` works: uid 10 is **running** at
+  `0x08A77560` (title-screen actor update). The prologue executes; the
+  count-PC zero hit is because the native entry is not counted.
+- `0x08A5F69C` belongs to the stopped/delayed **FileReadingTask** (uid 4),
+  not the title task.
+- `0x08970A00` remains a separate uncalled function; the title task is in
+  the actor-update loop.
+- `0x08A780F0` is a **return address**, not a caller; the real actor update
+  function starts at **`0x08A780BC`**.
+- `0x08A5FE64` is a block inside the larger title-screen setup function.
+- `0x08A5FDBC` is **also a mid-function block**; its one-shot caller hook
+  never fired, confirming there is no outer dispatch at that address.
+- The setup function’s real start is earlier than `0x08A5FDBC`; the current
+  title-screen path is actor/layout code, not the archive loader.
+- `0x08A5FDBC` was added as an extra function seed and is registered in
+  `generated_unit_0301.cpp`; build is current.
+- Static references to `0x08A5FD30` are from C++ vtable/typeinfo tables
+  (e.g. `0x08C4412C`) with adjacent class strings (`c2c2Sprite`, etc.).
+- `0x08A5FD30` is the first method of that scene/actor class; it is not the
+  EZBIND/archive loader.
+- The vtable addresses (`0x08C4412C`, `0x08C49C3C`, `0x08C6CF54`) have no
+  direct generated references; the constructor installs them through
+  relocated data pointers.
+- `0x08A5FDBC` is a sub-block and has no static reference.
+- `title.arc` remains unopened.
+- Next test: find the `c2c2Sprite` constructor via relocated data and trace
+  the title-screen manager/activation, not actor vtables, toward `title.arc`.
+- `title.arc` is still not opened.
 
 ## HLE surface
 
