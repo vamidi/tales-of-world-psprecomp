@@ -46,6 +46,7 @@ std::uint32_t g_post_osk_range_start = 0u;
 std::uint32_t g_post_osk_range_end = 0u;
 std::uint32_t g_post_osk_range_step = 0u;
 std::uint32_t g_present_count = 0u;
+std::uint32_t g_post_osk_present_base = 0u;
 struct ScheduledInput {
     std::uint32_t start{};
     std::uint32_t end{};
@@ -397,6 +398,15 @@ void window_arm_post_osk_capture(const char *path) {
         if (g_post_osk_range_step == 0u) g_post_osk_range_step = 1u;
     }
     g_post_osk_capture_armed.store(true);
+}
+
+void window_mark_post_osk() {
+    g_post_osk_present_base = g_present_count;
+}
+
+std::uint32_t window_post_osk_present_count() {
+    return g_present_count >= g_post_osk_present_base
+        ? g_present_count - g_post_osk_present_base : 0u;
 }
 
 void window_schedule_post_osk_input(std::uint32_t mask,

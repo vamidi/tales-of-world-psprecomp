@@ -263,6 +263,7 @@ std::int32_t g_msgdialog_status = 0;
 bool g_post_osk_input_active = false;
 std::uint64_t g_post_osk_input_until_us = 0u;
 std::uint32_t g_post_osk_input_mask = 0u;
+bool g_stop_auto_after_osk = false;
 
 struct MpegState {
     std::uint32_t address{};
@@ -3396,6 +3397,18 @@ void register_hle(psprecomp::Runtime &runtime, std::uint32_t user_arena_start) {
                     g_post_osk_input_active = false;
                 }
             }
+            if (!g_stop_auto_after_osk) {
+                if (const char *stop_text = std::getenv(
+                        "PSPRECOMP_TOW1_AUTO_STOP_AT_POST_OSK_PRESENT");
+                    stop_text != nullptr && *stop_text != '\0') {
+                    const std::uint32_t threshold = static_cast<std::uint32_t>(
+                        std::strtoul(stop_text, nullptr, 0));
+                    if (threshold != 0u &&
+                        window_post_osk_present_count() >= threshold) {
+                        g_stop_auto_after_osk = true;
+                    }
+                }
+            }
             if (std::getenv("PSPRECOMP_TOW1_PRESS_START") != nullptr) {
                 // Do not inject input during the opening movie.  The title
                 // pointer becomes non-zero when the title state is active.
@@ -3423,7 +3436,8 @@ void register_hle(psprecomp::Runtime &runtime, std::uint32_t user_arena_start) {
                         if (elapsed >= 15000000u && elapsed < 15250000u)
                             buttons |= 0x4000u; // New Game
                         if (const char *menu = std::getenv("PSPRECOMP_TOW1_MENU_BUTTON");
-                            menu != nullptr && elapsed >= 20000000u && elapsed < 1800000000u &&
+                            menu != nullptr && !g_stop_auto_after_osk &&
+                            elapsed >= 20000000u && elapsed < 1800000000u &&
                             (elapsed % 5000000u) < 250000u)
                             buttons |= static_cast<std::uint32_t>(
                                 std::strtoul(menu, nullptr, 0));
@@ -3445,7 +3459,8 @@ void register_hle(psprecomp::Runtime &runtime, std::uint32_t user_arena_start) {
                     if (sequence_armed && cross_sent) {
                         const std::uint64_t elapsed = g_scheduler.now_us - title_seen_us;
                         if (const char *menu = std::getenv("PSPRECOMP_TOW1_MENU_BUTTON");
-                            menu != nullptr && elapsed >= 30000000u && elapsed < 180000000u &&
+                            menu != nullptr && !g_stop_auto_after_osk &&
+                            elapsed >= 30000000u && elapsed < 180000000u &&
                             (elapsed % 5000000u) < 250000u)
                             buttons |= static_cast<std::uint32_t>(
                                 std::strtoul(menu, nullptr, 0));
@@ -4444,6 +4459,9 @@ void register_hle(psprecomp::Runtime &runtime, std::uint32_t user_arena_start) {
                 rt.memory().store32(g_osk_params + 0x38u, 5u); // OSK state finished
             }
             g_osk_status = 0;
+            window_mark_post_osk();
+            if (std::getenv("PSPRECOMP_TOW1_AUTO_STOP_AFTER_OSK") != nullptr)
+                g_stop_auto_after_osk = true;
             if (const char *frame_path =
                     std::getenv("PSPRECOMP_TOW1_POST_OSK_FRAME")) {
                 window_arm_post_osk_capture(frame_path);

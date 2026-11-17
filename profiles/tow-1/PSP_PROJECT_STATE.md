@@ -27,8 +27,9 @@
 - SHA-256: `105280ceba06338bd6bfdd2142c7950a6cb683c1798f3668c9df8898a2e5b89d`
 - Module / gp: `TOW_MAIN_ALFASYSTEM` / `0x08DBA950`
 - Current phase: 7 — gameplay stability. Character creation, field movement,
-  camera reset, the field menu, and the first soldier battle are verified.
-  Battle HUD/combat stability is the next gate.
+  camera reset, the field menu, the first soldier battle, basic combat,
+  post-battle dialogue, and the town return are verified. Battle menu/artes
+  and the next area are the next gates.
 
 ## Analysis and corpus
 
@@ -81,11 +82,21 @@ Last verified result:
   - The encounter is triggered by the scripted field route
     `Down → Right → Up → Left → Down`.
   - Post-OSK range capture (`..._FRAME_RANGE_START/END/STEP`) isolated the
-    battle frame at post-OSK present 13175.
-  - Battle HLE histogram: 157 unique imports / 5.51M calls; no missing HLE
+    battle frames.
+  - Combat input/flow verified:
+    - `battle_attack.png` — sword slash and hit effect, HP 215.
+    - `battle_critical.png` — “Critical Damage”, HP 212.
+    - Additional damage exchanges drop HP to 210 and 206.
+    - `battle_results.png` — victory results: EXP 23, Gald 100, Wand
+      obtained, time and grace fields.
+  - Battle HLE histogram: 157 unique imports / 5.68M calls; no missing HLE
     import and no GE command-limit warning.
   - Battle GE trace: lists `0x490964C0` and `0x48E0F740`, each queued with
     `stall == list`, flushed by `draw-sync` before presentation.
+- Post-battle scene captured:
+  - `post_battle_chester.png` — Chester/Kanonno/Mormo dialogue after the
+    victory.
+  - `town_return.png` — Mormo/town view after the scene.
 - Earlier field-route attempts (`field_down*`, `field_left*`, `field_right*`,
   `field_south_camera.png`) are retained as route evidence.
 - OSK status sequence is now correct:
@@ -401,9 +412,8 @@ The full import/HLE matrix and milestone order live in
 
 ## Next steps
 
-1. Use the walkthrough/oracle to locate the first field exit toward the
-   soldier/Kanonno encounter, then capture the first battle frame and its
-   battle HLE/GE trace.
+1. Verify battle menu/artes input and the next field/town interaction after
+   the Chester/Kanonno return scene.
 2. Re-check `cSoundManager`: it should resume at `0x08B1CE44` once the title
    frame loop runs; silent SAS is still acceptable until audio is required.
 3. Compare native frames with PPSSPP during the movie/title transition.
