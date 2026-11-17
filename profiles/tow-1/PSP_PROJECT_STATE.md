@@ -28,8 +28,8 @@
 - Module / gp: `TOW_MAIN_ALFASYSTEM` / `0x08DBA950`
 - Current phase: 7 — gameplay stability. Character creation, field movement,
   camera reset, the field menu, the first soldier battle, basic combat,
-  battle item/Artes/Unison menus, post-battle dialogue, and the town return
-  are verified. Town interaction is the next gate.
+  battle item/Artes/Unison menus, post-battle dialogue, and town NPC
+  interaction are verified. The guild/quest counter is the next gate.
 
 ## Analysis and corpus
 
@@ -105,8 +105,10 @@ Last verified result:
   - `town_return.png` — Mormo/town view after the scene.
   - `town_interaction.png` — town NPC dialogue after the return
     (“M-my daughter is…”), confirming the field-to-town interaction path.
-  - `town_move.png` / `town_guild.png` / `town_guild2.png` — town movement and
-    a second NPC dialogue; the guild/quest counter has not yet been reached.
+  - `town_move.png` / `town_guild.png` / `town_guild2.png` / `town_guild5.png`
+    — town movement and NPC dialogue. The guild/quest counter has not yet
+    been reached; the red guild building and its approach path still need a
+    verified route.
 - Earlier field-route attempts (`field_down*`, `field_left*`, `field_right*`,
   `field_south_camera.png`) are retained as route evidence.
 - OSK status sequence is now correct:
