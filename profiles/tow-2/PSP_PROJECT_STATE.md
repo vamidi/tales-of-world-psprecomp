@@ -115,9 +115,37 @@ need a hardware override.
   - `PSPRECOMP_TOW2_EZBIND_PROBE=1` calls `0x08A7384C` with the full
     `disc0:` path and proves the archive is reachable.
   - `PSPRECOMP_TOW2_TITLE_MOUNT` / `PSPRECOMP_TOW2_VFS_FIND` currently do not
-    complete (`mount ok=0`) and corrupt guest state (later null access at
-    `0x08A0F9C4`); keep them off until the mount's first unresolvable call is
-    traced.
+    complete (`mount ok=0`) and corrupt guest state; keep them off.
+
+## Title mount trace: first dead-end in `0x088206D8` (2026-11-17)
+
+- `0x088206D8` has **no unresolvable call**. Executed synchronously it runs
+  into the signal/wait pair at `0x08A703D8`:
+  `sceKernelSignalSema(0x08AEDCB8)` then `sceKernelSleepThreadCB(0x08AEDD18)`.
+  `run_isolated_aot` hits the 200,000-step limit there, because the isolated
+  dispatcher never lets another guest thread run. The routine is asynchronous
+  and must execute as a guest thread.
+- `PSPRECOMP_TOW2_TITLE_MOUNT_THREAD=1` starts it as a real priority-17 thread.
+  It reaches the VFS (`0x08A57DB0`, `0x08A59210`) and then signals semaphore
+  `0x200`, waking `user_main` (uid 1).
+- `user_main` resumes and faults in the game's `free()`:
+  - `0x08A633BC` -> `0x08A63D04` -> `0x08A7680C` (`free`) with `a0=0x08D10000`
+  - `0x08A7C608` reads the block header at `0x08D0FFC0`, gets `0`, and
+    dereferences `[0 + 8]`.
+- Heap state at the fault:
+  - live heap = `0x08EC7000`, size `0x00E80000`, first block `0x08EC7080`,
+    free list head `0x08F0DAC0`;
+  - `0x08A7C820` (heap constructor) ran **once**, at boot, with those args;
+  - `0x08D0FFC0`..`0x08D10040` is all zero and lies **outside** the live heap.
+- So `0x08D10000` is not a block of the current heap: freeing it against the
+  live heap is invalid. `PSPRECOMP_TOW2_SKIP_INVALID_FREE=1` installs a
+  profile override for `0x08A7680C` that leaks such a block instead of
+  faulting; the same alloc/free pair then repeats, so it is not a one-shot
+  leak but a stale-state loop.
+- Conclusion: the title mount is a handshake with `user_main`, not a
+  standalone initialiser. Forcing it from the post-movie
+  `sceKernelDeleteThread` callback re-enters `user_main` with stale state.
+  It has to run in the game's real scene-transition order.
 
 ## Current diagnosis
 
@@ -176,9 +204,9 @@ need a hardware override.
   the VFS for a `TitleArchive/...` file, so the archive is reached only
   through the `PSPRECOMP_TOW2_EZBIND_PROBE` diagnostic. The scene id stays
   `0xFFFF` and the title creator runs actor updates only.
-- Next test: make the title scene's asset request path run (it eventually
-  opens `TitleArchive/<name>` through the VFS), instead of calling the engine
-  open wrapper directly.
+- Next test: run the title mount in the real scene-transition order (before
+  `user_main` resumes), rather than forcing it from the post-movie delete
+  callback; then the scene should request `TitleArchive/...` itself.
 
 ## HLE surface
 

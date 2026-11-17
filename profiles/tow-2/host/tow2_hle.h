@@ -14,6 +14,10 @@ namespace tow2 {
 // thread stacks once the scheduler HLE exists.
 void register_hle(psprecomp::Runtime &runtime, std::uint32_t user_arena_start);
 
+// Profile overrides that must be installed after the generated registry so they
+// can replace a specific generated function (e.g. a heap-free guard).
+void register_overrides(psprecomp::Runtime &runtime);
+
 // Diagnostic: prints every live thread and its scheduler state once a
 // scheduler exists. No-op during Phase B.
 void report_threads();

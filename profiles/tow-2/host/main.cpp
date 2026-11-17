@@ -126,6 +126,7 @@ int main(int argc, char **argv) {
 
         tow2::register_hle(runtime, user_arena_start);
         psprecomp::register_generated_functions(runtime);
+        tow2::register_overrides(runtime);
 
         if (runtime.function_count() == 0u) {
             throw psprecomp::Error("No generated functions registered");

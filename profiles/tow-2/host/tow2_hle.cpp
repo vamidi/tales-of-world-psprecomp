@@ -5,6 +5,8 @@
 #include "tow2_mpeg.hpp"
 #include "tow2_window.hpp"
 
+#include "generated_units.hpp"
+
 #include "psprecomp/common.hpp"
 #include "psprecomp/elf32.hpp"
 
@@ -820,13 +822,50 @@ constexpr std::uint32_t kIsolatedReturnSentinel = 0xDEADBEEFu;
 
 bool run_isolated_aot(psprecomp::Runtime &runtime,
                       psprecomp::AllegrexContext &ctx, std::uint32_t entry,
-                      std::uint32_t return_sentinel, int max_steps = 200000) {
+                      std::uint32_t return_sentinel, int max_steps = 200000,
+                      const char *tag = "iso") {
     ctx.pc = entry;
     ctx.set_gpr(31, return_sentinel);
+
+    std::array<std::uint32_t, 12> recent{};
+    std::size_t recent_count = 0;
+    auto record = [&](std::uint32_t pc) {
+        recent[recent_count % recent.size()] = pc;
+        ++recent_count;
+    };
+    auto dump_recent = [&]() {
+        const std::size_t shown = std::min<std::size_t>(recent_count, recent.size());
+        std::cerr << "[tow2-iso] " << tag << " recent:";
+        for (std::size_t i = 0; i < shown; ++i) {
+            const std::size_t index =
+                (recent_count - shown + i) % recent.size();
+            std::cerr << " " << psprecomp::hex32(recent[index]);
+        }
+        std::cerr << "\n[tow2-iso] " << tag << " regs: a0="
+                  << psprecomp::hex32(ctx.gpr[4]) << " a1="
+                  << psprecomp::hex32(ctx.gpr[5]) << " a2="
+                  << psprecomp::hex32(ctx.gpr[6]) << " a3="
+                  << psprecomp::hex32(ctx.gpr[7]) << " sp="
+                  << psprecomp::hex32(ctx.gpr[29]) << " ra="
+                  << psprecomp::hex32(ctx.gpr[31]) << "\n";
+    };
+
     for (int step = 0; step < max_steps; ++step) {
         if (ctx.pc == return_sentinel) return true;
-        if (!runtime.invoke_isolated_aot(ctx.pc, ctx)) return false;
+        record(ctx.pc);
+        if (!runtime.invoke_isolated_aot(ctx.pc, ctx)) {
+            std::cerr << "[tow2-iso] " << tag
+                      << " unresolved pc=" << psprecomp::hex32(ctx.pc)
+                      << " step=" << step
+                      << " registered="
+                      << (runtime.has_function(ctx.pc) ? 1 : 0) << "\n";
+            dump_recent();
+            return false;
+        }
     }
+    std::cerr << "[tow2-iso] " << tag << " step limit=" << max_steps
+              << " at pc=" << psprecomp::hex32(ctx.pc) << "\n";
+    dump_recent();
     return false;
 }
 
@@ -924,7 +963,8 @@ void delete_thread(psprecomp::Runtime &runtime, psprecomp::AllegrexContext &ctx)
             load_ctx.set_gpr(4, title_object);
             load_ctx.set_gpr(29, ctx.gpr[29] - 0x1000u);
             const bool load_ok = run_isolated_aot(runtime, load_ctx, 0x08A4B0FCu,
-                                                  kIsolatedReturnSentinel);
+                                                  kIsolatedReturnSentinel, 200000,
+                                                  "load");
             std::cerr << "[tow2-title] load ok=" << (load_ok ? 1 : 0)
                       << " object=" << psprecomp::hex32(title_object) << "\n";
             if (std::getenv("PSPRECOMP_TOW2_TITLE_ARC_OPEN") != nullptr) {
@@ -933,7 +973,8 @@ void delete_thread(psprecomp::Runtime &runtime, psprecomp::AllegrexContext &ctx)
                 arc_ctx.set_gpr(5, 0u);
                 arc_ctx.set_gpr(29, ctx.gpr[29] - 0x2000u);
                 const bool open_ok = run_isolated_aot(
-                    runtime, arc_ctx, 0x08A7384Cu, kIsolatedReturnSentinel);
+                    runtime, arc_ctx, 0x08A7384Cu, kIsolatedReturnSentinel,
+                    200000, "open");
                 std::cerr << "[tow2-title] title.arc open ok="
                           << (open_ok ? 1 : 0)
                           << " ret=" << psprecomp::hex32(arc_ctx.gpr[2])
@@ -948,10 +989,38 @@ void delete_thread(psprecomp::Runtime &runtime, psprecomp::AllegrexContext &ctx)
                 mount_ctx.set_gpr(4, 0u);
                 mount_ctx.set_gpr(29, ctx.gpr[29] - 0x2000u);
                 const bool mount_ok = run_isolated_aot(
-                    runtime, mount_ctx, 0x088206D8u, kIsolatedReturnSentinel);
+                    runtime, mount_ctx, 0x088206D8u, kIsolatedReturnSentinel,
+                    200000, "mount");
                 std::cerr << "[tow2-title] mount ok=" << (mount_ok ? 1 : 0)
                           << " ret=" << psprecomp::hex32(mount_ctx.gpr[2])
                           << "\n";
+            }
+            if (std::getenv("PSPRECOMP_TOW2_TITLE_MOUNT_THREAD") != nullptr) {
+                // The mount routine waits on a worker semaphore, so it cannot
+                // run inside the isolated dispatcher (which never lets other
+                // guest threads run). Start it as a real guest thread instead.
+                psprecomp::AllegrexContext mount_thread_ctx = ctx;
+                mount_thread_ctx.set_gpr(4, 0u);
+                mount_thread_ctx.set_gpr(5, 0x088206D8u);
+                mount_thread_ctx.set_gpr(6, 17u);
+                mount_thread_ctx.set_gpr(7, 0x4000u);
+                mount_thread_ctx.set_gpr(8, 0u);
+                create_thread(runtime, mount_thread_ctx);
+                const std::int32_t mount_uid =
+                    static_cast<std::int32_t>(mount_thread_ctx.gpr[2]);
+                if (mount_uid > 0) {
+                    psprecomp::AllegrexContext start_ctx = ctx;
+                    start_ctx.set_gpr(4, static_cast<std::uint32_t>(mount_uid));
+                    start_ctx.set_gpr(5, 0u);
+                    start_ctx.set_gpr(6, 0u);
+                    start_thread(runtime, start_ctx);
+                    std::cerr << "[tow2-title] mount thread uid=" << mount_uid
+                              << "\n";
+                } else {
+                    std::cerr << "[tow2-title] mount thread create failed="
+                              << psprecomp::hex32(mount_thread_ctx.gpr[2])
+                              << "\n";
+                }
             }
             if (std::getenv("PSPRECOMP_TOW2_VFS_FIND") != nullptr) {
                 // Probe the engine VFS mount table after the title mount:
@@ -959,7 +1028,8 @@ void delete_thread(psprecomp::Runtime &runtime, psprecomp::AllegrexContext &ctx)
                 psprecomp::AllegrexContext mgr_ctx = ctx;
                 mgr_ctx.set_gpr(29, ctx.gpr[29] - 0x1000u);
                 const bool mgr_ok = run_isolated_aot(
-                    runtime, mgr_ctx, 0x08AC5338u, kIsolatedReturnSentinel);
+                    runtime, mgr_ctx, 0x08AC5338u, kIsolatedReturnSentinel,
+                    200000, "manager");
                 const std::uint32_t manager = mgr_ctx.gpr[2];
                 std::cerr << "[tow2-vfs] manager ok=" << (mgr_ok ? 1 : 0)
                           << " value=" << psprecomp::hex32(manager) << "\n";
@@ -968,7 +1038,8 @@ void delete_thread(psprecomp::Runtime &runtime, psprecomp::AllegrexContext &ctx)
                 find_ctx.set_gpr(5, 0x08C239A4u); // "TitleArchive/water_02.ppt"
                 find_ctx.set_gpr(29, ctx.gpr[29] - 0x2000u);
                 const bool find_ok = run_isolated_aot(
-                    runtime, find_ctx, 0x08A59378u, kIsolatedReturnSentinel);
+                    runtime, find_ctx, 0x08A59378u, kIsolatedReturnSentinel,
+                    200000, "find");
                 std::cerr << "[tow2-vfs] find ok=" << (find_ok ? 1 : 0)
                           << " ret=" << psprecomp::hex32(find_ctx.gpr[2])
                           << "\n";
@@ -992,12 +1063,14 @@ void delete_thread(psprecomp::Runtime &runtime, psprecomp::AllegrexContext &ctx)
                 open_ctx.set_gpr(6, 0u);
                 open_ctx.set_gpr(29, ctx.gpr[29] - 0x2000u);
                 const bool open_ok = run_isolated_aot(
-                    runtime, open_ctx, 0x08A7384Cu, kIsolatedReturnSentinel);
+                    runtime, open_ctx, 0x08A7384Cu, kIsolatedReturnSentinel,
+                    200000, "ezbind-open");
                 std::cerr << "[tow2-title] title.arc guest open ok="
                           << (open_ok ? 1 : 0)
                           << " fd=" << psprecomp::hex32(open_ctx.gpr[2]) << "\n";
             }
 
+            if (std::getenv("PSPRECOMP_TOW2_TITLE_MOUNT_THREAD") == nullptr) {
             psprecomp::AllegrexContext creator_ctx{};
             creator_ctx.gpr[4] = 0u;
             creator_ctx.gpr[5] = kTitleCreatorThread;
@@ -1081,6 +1154,7 @@ void delete_thread(psprecomp::Runtime &runtime, psprecomp::AllegrexContext &ctx)
             } else {
                 std::cerr << "[tow2-title] state2 create failed="
                           << psprecomp::hex32(state2_ctx.gpr[2]) << "\n";
+            }
             }
         }
     }
@@ -2783,6 +2857,68 @@ void report_threads() {
                   << " waiters=" << flag.waiters.size() << "\n";
     }
     report_movie_state();
+}
+
+// Diagnostic guard for the game's free() (0x08A7680C), which is the generated
+// unit 313 entry 69. A block whose header pointer at block+0 is zero has never
+// been linked into the allocator (the first block of a heap region that was not
+// initialised), and the real free() dereferences it immediately. With
+// PSPRECOMP_TOW2_SKIP_INVALID_FREE=1 the guard leaks that block instead of
+// faulting so the caller can be traced further.
+void free_guard(psprecomp::Runtime &runtime, psprecomp::AllegrexContext &ctx) {
+    static const bool skip_invalid =
+        std::getenv("PSPRECOMP_TOW2_SKIP_INVALID_FREE") != nullptr;
+    static std::uint64_t skipped = 0;
+    const std::uint32_t pointer = ctx.gpr[4];
+    const bool header_ok =
+        pointer != 0u && runtime.memory().contains(pointer - 64u, 8u);
+    const bool invalid = header_ok && runtime.memory().load32(pointer - 64u) == 0u;
+    if (skip_invalid && invalid) {
+        if (skipped++ < 16u) {
+            std::cerr << "[tow2-heap] skip invalid free("
+                      << psprecomp::hex32(pointer) << ") block="
+                      << psprecomp::hex32(pointer - 64u)
+                      << " (header next=0)\n";
+        }
+        if (skipped == 1u && runtime.memory().contains(0x08D0460Cu, 4u)) {
+            const std::uint32_t heap =
+                runtime.memory().load32(0x08D0460Cu);
+            const std::uint32_t region =
+                (heap != 0u && runtime.memory().contains(heap + 8u, 4u))
+                    ? runtime.memory().load32(heap + 8u) : 0u;
+            std::cerr << "[tow2-heap] heap=" << psprecomp::hex32(heap)
+                      << " region=" << psprecomp::hex32(region) << "\n";
+            if (region != 0u && runtime.memory().contains(region, 0x20u)) {
+                std::cerr << "[tow2-heap] region head:";
+                for (std::uint32_t i = 0; i < 6u; ++i) {
+                    std::cerr << " " << psprecomp::hex32(
+                        runtime.memory().load32(region + i * 4u));
+                }
+                std::cerr << "\n";
+            }
+            for (std::uint32_t address = pointer - 0x80u;
+                 address < pointer + 0x40u; address += 0x10u) {
+                if (!runtime.memory().contains(address, 0x10u)) continue;
+                std::cerr << "[tow2-heap] " << psprecomp::hex32(address) << ": "
+                          << psprecomp::hex32(runtime.memory().load32(address))
+                          << " " << psprecomp::hex32(runtime.memory().load32(address + 4u))
+                          << " " << psprecomp::hex32(runtime.memory().load32(address + 8u))
+                          << " " << psprecomp::hex32(runtime.memory().load32(address + 12u))
+                          << "\n";
+            }
+        }
+        ctx.set_gpr(2, 0u);
+        return;
+    }
+    auto view = runtime.memory().aot_fast_view();
+    recomp_unit_0313_entry(runtime, ctx, 69u, view);
+}
+
+void register_overrides(psprecomp::Runtime &runtime) {
+    if (std::getenv("PSPRECOMP_TOW2_SKIP_INVALID_FREE") != nullptr) {
+        runtime.register_function(0x08A7680Cu, &free_guard,
+                                  "tow2_free_guard");
+    }
 }
 
 void register_hle(psprecomp::Runtime &runtime, std::uint32_t user_arena_start) {
