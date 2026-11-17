@@ -28,8 +28,8 @@
 - Module / gp: `TOW_MAIN_ALFASYSTEM` / `0x08DBA950`
 - Current phase: 7 — gameplay stability. Character creation, field movement,
   camera reset, the field menu, the first soldier battle, basic combat,
-  post-battle dialogue, and the town return are verified. Battle menu/artes
-  and the next area are the next gates.
+  battle item/Artes/Unison menus, post-battle dialogue, and the town return
+  are verified. Town interaction is the next gate.
 
 ## Analysis and corpus
 
@@ -93,10 +93,16 @@ Last verified result:
     import and no GE command-limit warning.
   - Battle GE trace: lists `0x490964C0` and `0x48E0F740`, each queued with
     `stall == list`, flushed by `draw-sync` before presentation.
+- Battle menu/Artes flow verified:
+  - `battle_menu_items.png` — battle item/command menu.
+  - `battle_menu_unison.png` — “Select artes used for Unison attack”.
+  - Menu input uses Triangle; battle HUD remains live behind the menu.
 - Post-battle scene captured:
   - `post_battle_chester.png` — Chester/Kanonno/Mormo dialogue after the
     victory.
   - `town_return.png` — Mormo/town view after the scene.
+  - `town_interaction.png` — town NPC dialogue after the return
+    (“M-my daughter is…”), confirming the field-to-town interaction path.
 - Earlier field-route attempts (`field_down*`, `field_left*`, `field_right*`,
   `field_south_camera.png`) are retained as route evidence.
 - OSK status sequence is now correct:
@@ -412,8 +418,8 @@ The full import/HLE matrix and milestone order live in
 
 ## Next steps
 
-1. Verify battle menu/artes input and the next field/town interaction after
-   the Chester/Kanonno return scene.
+1. Reach and verify the Ailily guild/quest flow after the town NPC
+   interaction.
 2. Re-check `cSoundManager`: it should resume at `0x08B1CE44` once the title
    frame loop runs; silent SAS is still acceptable until audio is required.
 3. Compare native frames with PPSSPP during the movie/title transition.
