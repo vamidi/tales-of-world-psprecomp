@@ -24,8 +24,8 @@
 - SHA-256: `105280ceba06338bd6bfdd2142c7950a6cb683c1798f3668c9df8898a2e5b89d`
 - Module / gp: `TOW_MAIN_ALFASYSTEM` / `0x08DBA950`
 - Current phase: 7 — gameplay stability. Character creation, field movement,
-  camera reset, and the field menu are verified. The first battle is the next
-  gate; the field route to its event trigger is not yet located.
+  camera reset, the field menu, and the first soldier battle are verified.
+  Battle HUD/combat stability is the next gate.
 
 ## Analysis and corpus
 
@@ -72,10 +72,19 @@ Last verified result:
   character movement (`field_camera2.png`).
 - Field menu verified: Triangle opens the Artes/control screen
   (`field_menu.png`), with HP/TP and arte list rendered.
-- First battle not yet triggered. Tested Down/Up/Left/Right and R-camera
-  movement; the field's exit/event trigger still needs to be located.
-  `field_down*`, `field_left*`, `field_right*`, and `field_south_camera.png`
-  are the current route captures.
+- First soldier battle reached and captured:
+  - `battle_first.ppm` / `battle_first.png` show the battle HUD, player
+    character, soldier, and the combat field.
+  - The encounter is triggered by the scripted field route
+    `Down → Right → Up → Left → Down`.
+  - Post-OSK range capture (`..._FRAME_RANGE_START/END/STEP`) isolated the
+    battle frame at post-OSK present 13175.
+  - Battle HLE histogram: 157 unique imports / 5.51M calls; no missing HLE
+    import and no GE command-limit warning.
+  - Battle GE trace: lists `0x490964C0` and `0x48E0F740`, each queued with
+    `stall == list`, flushed by `draw-sync` before presentation.
+- Earlier field-route attempts (`field_down*`, `field_left*`, `field_right*`,
+  `field_south_camera.png`) are retained as route evidence.
 - OSK status sequence is now correct:
   `init -> visible(2) -> update -> quit(3) -> shutdown -> NONE(0)`.
 - A logic-only run with `PSPRECOMP_TOW1_GE_DISABLE=1` and destabilized
@@ -140,6 +149,8 @@ Last verified result:
   `PSPRECOMP_TOW1_POST_OSK_INPUT_MASK=mask`,
   `PSPRECOMP_TOW1_POST_OSK_INPUT_DELAY=frames`,
   `PSPRECOMP_TOW1_POST_OSK_INPUT_HOLD=frames`,
+  `PSPRECOMP_TOW1_POST_OSK_INPUT_SEQUENCE=delay:hold:mask,...`,
+  `PSPRECOMP_TOW1_POST_OSK_FRAME_RANGE_START/END/STEP`,
   `PSPRECOMP_TOW1_LIBFONT_DIAG=1`.
 
 ## HLE surface

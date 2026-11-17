@@ -41,10 +41,17 @@ bool g_have_frame = false;
 std::atomic<bool> g_post_osk_capture_armed{false};
 std::string g_post_osk_capture_path;
 std::uint32_t g_post_osk_capture_delay = 0u;
+std::uint32_t g_post_osk_capture_base = 0u;
+std::uint32_t g_post_osk_range_start = 0u;
+std::uint32_t g_post_osk_range_end = 0u;
+std::uint32_t g_post_osk_range_step = 0u;
 std::uint32_t g_present_count = 0u;
-std::uint32_t g_scheduled_input_mask = 0u;
-std::uint32_t g_scheduled_input_start = 0u;
-std::uint32_t g_scheduled_input_end = 0u;
+struct ScheduledInput {
+    std::uint32_t start{};
+    std::uint32_t end{};
+    std::uint32_t mask{};
+};
+std::vector<ScheduledInput> g_scheduled_inputs;
 
 #if defined(_WIN32)
 HWND g_hwnd = nullptr;
@@ -293,11 +300,37 @@ void window_present(const psprecomp::GuestMemory &memory, std::uint32_t address,
         ++dump_count;
     }
 
-    if (g_post_osk_capture_armed.load() && g_post_osk_capture_delay != 0u) {
+    if (g_post_osk_capture_armed.load() && g_post_osk_range_end != 0u) {
+        const std::uint32_t offset = g_present_count - g_post_osk_capture_base;
+        if (offset >= g_post_osk_range_start && offset <= g_post_osk_range_end &&
+            ((offset - g_post_osk_range_start) % g_post_osk_range_step) == 0u) {
+            const std::string path = g_post_osk_capture_path + "." +
+                std::to_string(offset) + ".ppm";
+            std::ofstream out(path, std::ios::binary);
+            if (out) {
+                out << "P6\n" << kWidth << ' ' << kHeight << "\n255\n";
+                for (const std::uint32_t pixel : frame) {
+                    const char rgb[3] = {
+                        static_cast<char>((pixel >> 16u) & 0xFFu),
+                        static_cast<char>((pixel >> 8u) & 0xFFu),
+                        static_cast<char>(pixel & 0xFFu)};
+                    out.write(rgb, 3);
+                }
+                std::cerr << "[tow1-frame] post-OSK range capture \""
+                          << path << "\"\n";
+            }
+        }
+        if (offset >= g_post_osk_range_end) {
+            g_post_osk_capture_armed.store(false);
+            if (std::getenv("PSPRECOMP_TOW1_POST_OSK_EXIT") != nullptr)
+                std::exit(0);
+        }
+    } else if (g_post_osk_capture_armed.load() &&
+               g_post_osk_capture_delay != 0u) {
         --g_post_osk_capture_delay;
-    }
-    if (g_post_osk_capture_armed.load() && g_post_osk_capture_delay == 0u &&
-        g_post_osk_capture_armed.exchange(false)) {
+    } else if (g_post_osk_capture_armed.load() &&
+               g_post_osk_capture_delay == 0u &&
+               g_post_osk_capture_armed.exchange(false)) {
         std::ofstream out(g_post_osk_capture_path, std::ios::binary);
         if (out) {
             out << "P6\n" << kWidth << ' ' << kHeight << "\n255\n";
@@ -340,10 +373,28 @@ void window_arm_post_osk_capture(const char *path) {
     if (path == nullptr || *path == '\0') return;
     g_post_osk_capture_path = path;
     g_post_osk_capture_delay = 0u;
+    g_post_osk_capture_base = g_present_count;
+    g_post_osk_range_start = 0u;
+    g_post_osk_range_end = 0u;
+    g_post_osk_range_step = 0u;
     if (const char *delay_text =
             std::getenv("PSPRECOMP_TOW1_POST_OSK_FRAME_DELAY")) {
         g_post_osk_capture_delay = static_cast<std::uint32_t>(
             std::strtoul(delay_text, nullptr, 0));
+    }
+    if (const char *start_text =
+            std::getenv("PSPRECOMP_TOW1_POST_OSK_FRAME_RANGE_START")) {
+        g_post_osk_range_start = static_cast<std::uint32_t>(
+            std::strtoul(start_text, nullptr, 0));
+        if (const char *end_text =
+                std::getenv("PSPRECOMP_TOW1_POST_OSK_FRAME_RANGE_END"))
+            g_post_osk_range_end = static_cast<std::uint32_t>(
+                std::strtoul(end_text, nullptr, 0));
+        if (const char *step_text =
+                std::getenv("PSPRECOMP_TOW1_POST_OSK_FRAME_RANGE_STEP"))
+            g_post_osk_range_step = static_cast<std::uint32_t>(
+                std::strtoul(step_text, nullptr, 0));
+        if (g_post_osk_range_step == 0u) g_post_osk_range_step = 1u;
     }
     g_post_osk_capture_armed.store(true);
 }
@@ -352,9 +403,11 @@ void window_schedule_post_osk_input(std::uint32_t mask,
                                     std::uint32_t delay_frames,
                                     std::uint32_t hold_frames) {
     if (mask == 0u || hold_frames == 0u) return;
-    g_scheduled_input_mask = mask;
-    g_scheduled_input_start = g_present_count + delay_frames;
-    g_scheduled_input_end = g_scheduled_input_start + hold_frames;
+    ScheduledInput input;
+    input.start = g_present_count + delay_frames;
+    input.end = input.start + hold_frames;
+    input.mask = mask;
+    g_scheduled_inputs.push_back(input);
 }
 
 void window_shutdown() {
@@ -367,10 +420,9 @@ void window_shutdown() {
 
 std::uint32_t window_buttons() {
     std::uint32_t buttons = g_buttons.load();
-    if (g_scheduled_input_mask != 0u &&
-        g_present_count >= g_scheduled_input_start &&
-        g_present_count < g_scheduled_input_end) {
-        buttons |= g_scheduled_input_mask;
+    for (const ScheduledInput &input : g_scheduled_inputs) {
+        if (g_present_count >= input.start && g_present_count < input.end)
+            buttons |= input.mask;
     }
     return buttons;
 }
