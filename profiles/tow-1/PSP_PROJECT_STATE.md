@@ -23,9 +23,9 @@
 - ELF type / load base: `0xFFA0` (PSP PRX) / `0x08804000`
 - SHA-256: `105280ceba06338bd6bfdd2142c7950a6cb683c1798f3668c9df8898a2e5b89d`
 - Module / gp: `TOW_MAIN_ALFASYSTEM` / `0x08DBA950`
-- Current phase: 7 — gameplay stability. Character creation is complete and
-  the first controllable field has been reached; field-movement verification
-  is the next gate.
+- Current phase: 7 — gameplay stability. Character creation, field movement,
+  camera reset, and the field menu are verified. The first battle is the next
+  gate; the field route to its event trigger is not yet located.
 
 ## Analysis and corpus
 
@@ -66,6 +66,16 @@ Last verified result:
   - 600 presents: transition cutscene.
   - 3000 presents: first field dialogue (Mermo / “Yacon”).
   - 6000 presents: controllable field with character and compass HUD.
+- Field movement verified: scheduled Right input moves the character and
+  changes the camera view (`field_right.png`).
+- Camera input verified: `R + Left` rotates/resets the camera independently of
+  character movement (`field_camera2.png`).
+- Field menu verified: Triangle opens the Artes/control screen
+  (`field_menu.png`), with HP/TP and arte list rendered.
+- First battle not yet triggered. Tested Down/Up/Left/Right and R-camera
+  movement; the field's exit/event trigger still needs to be located.
+  `field_down*`, `field_left*`, `field_right*`, and `field_south_camera.png`
+  are the current route captures.
 - OSK status sequence is now correct:
   `init -> visible(2) -> update -> quit(3) -> shutdown -> NONE(0)`.
 - A logic-only run with `PSPRECOMP_TOW1_GE_DISABLE=1` and destabilized
@@ -126,7 +136,11 @@ Last verified result:
   `PSPRECOMP_TOW1_POST_OSK_FRAME=path`,
   `PSPRECOMP_TOW1_POST_OSK_FRAME_DELAY=N`,
   `PSPRECOMP_TOW1_POST_OSK_BUTTON=mask`,
-  `PSPRECOMP_TOW1_POST_OSK_BUTTON_US=N`, `PSPRECOMP_TOW1_LIBFONT_DIAG=1`.
+  `PSPRECOMP_TOW1_POST_OSK_BUTTON_US=N`,
+  `PSPRECOMP_TOW1_POST_OSK_INPUT_MASK=mask`,
+  `PSPRECOMP_TOW1_POST_OSK_INPUT_DELAY=frames`,
+  `PSPRECOMP_TOW1_POST_OSK_INPUT_HOLD=frames`,
+  `PSPRECOMP_TOW1_LIBFONT_DIAG=1`.
 
 ## HLE surface
 
@@ -373,8 +387,9 @@ The full import/HLE matrix and milestone order live in
 
 ## Next steps
 
-1. Continue from character creation: verify OSK/voice/job completion, then
-   capture the first controllable field frame and its HLE histogram.
+1. Use the walkthrough/oracle to locate the first field exit toward the
+   soldier/Kanonno encounter, then capture the first battle frame and its
+   battle HLE/GE trace.
 2. Re-check `cSoundManager`: it should resume at `0x08B1CE44` once the title
    frame loop runs; silent SAS is still acceptable until audio is required.
 3. Compare native frames with PPSSPP during the movie/title transition.

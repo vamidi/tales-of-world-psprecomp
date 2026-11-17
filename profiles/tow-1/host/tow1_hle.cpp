@@ -4462,6 +4462,22 @@ void register_hle(psprecomp::Runtime &runtime, std::uint32_t user_arena_start) {
                     g_post_osk_input_until_us = g_scheduler.now_us + duration_us;
                 }
             }
+            if (const char *input_text =
+                    std::getenv("PSPRECOMP_TOW1_POST_OSK_INPUT_MASK")) {
+                const std::uint32_t mask = static_cast<std::uint32_t>(
+                    std::strtoul(input_text, nullptr, 0));
+                std::uint32_t delay_frames = 0u;
+                std::uint32_t hold_frames = 60u;
+                if (const char *delay_text =
+                        std::getenv("PSPRECOMP_TOW1_POST_OSK_INPUT_DELAY"))
+                    delay_frames = static_cast<std::uint32_t>(
+                        std::strtoul(delay_text, nullptr, 0));
+                if (const char *hold_text =
+                        std::getenv("PSPRECOMP_TOW1_POST_OSK_INPUT_HOLD"))
+                    hold_frames = static_cast<std::uint32_t>(
+                        std::strtoul(hold_text, nullptr, 0));
+                window_schedule_post_osk_input(mask, delay_frames, hold_frames);
+            }
             if (std::getenv("PSPRECOMP_TOW1_GE_POST_OSK_DIAG") != nullptr) {
                 ge_set_post_osk(true);
             }

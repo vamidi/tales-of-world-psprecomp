@@ -41,6 +41,10 @@ bool g_have_frame = false;
 std::atomic<bool> g_post_osk_capture_armed{false};
 std::string g_post_osk_capture_path;
 std::uint32_t g_post_osk_capture_delay = 0u;
+std::uint32_t g_present_count = 0u;
+std::uint32_t g_scheduled_input_mask = 0u;
+std::uint32_t g_scheduled_input_start = 0u;
+std::uint32_t g_scheduled_input_end = 0u;
 
 #if defined(_WIN32)
 HWND g_hwnd = nullptr;
@@ -239,6 +243,7 @@ void window_present(const psprecomp::GuestMemory &memory, std::uint32_t address,
     const std::uint32_t bytes_per_pixel = format == 3u ? 4u : 2u;
     if (!memory.contains(address, static_cast<std::size_t>(stride) * kHeight * bytes_per_pixel))
         return;
+    ++g_present_count;
     std::vector<std::uint32_t> frame(kWidth * kHeight, 0xFF000000u);
     for (std::uint32_t y = 0u; y < kHeight; ++y) {
         const std::uint32_t row = address + y * stride * bytes_per_pixel;
@@ -343,6 +348,15 @@ void window_arm_post_osk_capture(const char *path) {
     g_post_osk_capture_armed.store(true);
 }
 
+void window_schedule_post_osk_input(std::uint32_t mask,
+                                    std::uint32_t delay_frames,
+                                    std::uint32_t hold_frames) {
+    if (mask == 0u || hold_frames == 0u) return;
+    g_scheduled_input_mask = mask;
+    g_scheduled_input_start = g_present_count + delay_frames;
+    g_scheduled_input_end = g_scheduled_input_start + hold_frames;
+}
+
 void window_shutdown() {
     g_close_requested.store(true);
 #if defined(_WIN32)
@@ -352,7 +366,13 @@ void window_shutdown() {
 }
 
 std::uint32_t window_buttons() {
-    return g_buttons.load();
+    std::uint32_t buttons = g_buttons.load();
+    if (g_scheduled_input_mask != 0u &&
+        g_present_count >= g_scheduled_input_start &&
+        g_present_count < g_scheduled_input_end) {
+        buttons |= g_scheduled_input_mask;
+    }
+    return buttons;
 }
 
 } // namespace tow1
