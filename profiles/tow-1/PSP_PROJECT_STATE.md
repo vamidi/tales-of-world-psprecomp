@@ -106,9 +106,12 @@ Last verified result:
   - `town_interaction.png` — town NPC dialogue after the return
     (“M-my daughter is…”), confirming the field-to-town interaction path.
   - `town_move.png` / `town_guild.png` / `town_guild2.png` / `town_guild5.png`
-    — town movement and NPC dialogue. The guild/quest counter has not yet
-    been reached; the red guild building and its approach path still need a
-    verified route.
+    — town movement and NPC dialogue.
+  - `town_guild7.png` / `guild_counter2.png` — the diagonal town route entered
+    a **Weapon Shop**, not the guild; the shop owner dialogue was captured.
+    The Ad Libitum guild/quest counter has not yet been reached.
+  - `town_left_building.png` — alternate left-side route (benches/stairs);
+    also not the guild.
 - Earlier field-route attempts (`field_down*`, `field_left*`, `field_right*`,
   `field_south_camera.png`) are retained as route evidence.
 - OSK status sequence is now correct:
