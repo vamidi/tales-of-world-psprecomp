@@ -1,8 +1,11 @@
 # PSP Project State — tow-1
 
 > Auto-maintained. Read at session start, update after every major action.
-> This is the canonical state for `profiles/tow-1`. The old `HANDOFF.md` and
-> `analysis/gameplay_port_plan.md` are retained only as redirects.
+> This is the canonical state for `profiles/tow-1`. A beginner-oriented
+> recompilation walkthrough is in
+> [`RECOMPILATION_TUTORIAL.md`](RECOMPILATION_TUTORIAL.md). The old
+> `HANDOFF.md` and `analysis/gameplay_port_plan.md` are retained only as
+> redirects.
 
 ## Repository
 
