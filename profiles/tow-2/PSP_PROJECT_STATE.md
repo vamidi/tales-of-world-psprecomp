@@ -155,6 +155,31 @@ Next step: populate the scene via `0x08814AEC` (the
 that sets `[scene+15348]`, then re-run the start and watch for
 `TitleArchive` opens.
 
+### Registration + start attempt (verified 2026-11-17)
+
+- `0x08814AEC(scene, 0, 0, scene, 0, 0)` installs the manager itself as the
+  scene object; fields read back as `+15340=0`, `+15348=0x08D9B920`.
+- With that registration:
+  - `0x08814628(scene, 0)` returns `0x08D10000` (a real pointer, not `-1`).
+  - `0x08814628(scene, 1)` returns `-1` **and moves the scene id off
+    `0xFFFF` to `0`**; mode 2 keeps `id=0`.
+- Combined with `PSPRECOMP_TOW2_TITLE_MOUNT_THREAD=1` and
+  `PSPRECOMP_TOW2_HOLD_USER_MAIN=1` the run is stable (no guest fault) and
+  reaches the dispatch limit at `0x08A780BC` (title actor update).
+- New evidence of title asset setup: `0x0881F5B0` (title asset list builder)
+  executes **2 times**, and `0x0881EC38` (title object update) ~29,600 times.
+- Still **no `TitleArchive` open**: `0x08A7384C` (sync open wrapper) hits 0,
+  the file worker stays idle, and `PSPRECOMP_FILE_DIAG=1` shows only
+  `title/title.pmf`.
+- Environment for this configuration:
+  `PSPRECOMP_TOW2_TITLE_TRIGGER=1 PSPRECOMP_TOW2_TITLE_MOUNT_THREAD=1
+   PSPRECOMP_TOW2_HOLD_USER_MAIN=1 PSPRECOMP_TOW2_SCENE_START=1
+   PSPRECOMP_TOW2_SCENE_REG=1`
+
+Next: find what submits the built asset list (the state machine around
+`0x0881EC38` / the title state thread). The list is built but never handed to
+the file manager.
+
 ## Title scene ordering (2026-11-17)
 
 Goal: start the title mount before `user_main` resumes, then observe

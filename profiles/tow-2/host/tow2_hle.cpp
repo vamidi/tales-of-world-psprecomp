@@ -1004,15 +1004,39 @@ void delete_thread(psprecomp::Runtime &runtime, psprecomp::AllegrexContext &ctx)
                       << " value=" << psprecomp::hex32(scene_manager) << "\n";
             psprecomp::AllegrexContext start_ctx = ctx;
             start_ctx.set_gpr(4, scene_manager);
-            start_ctx.set_gpr(5, 1u);
             start_ctx.set_gpr(29, ctx.gpr[29] - 0x4000u);
-            const bool start_ok = run_isolated_aot(
-                runtime, start_ctx, 0x08814628u, kIsolatedReturnSentinel,
-                2000000, "scene-start");
-            std::cerr << "[tow2-scene] start(1) ok=" << (start_ok ? 1 : 0)
-                      << " ret=" << psprecomp::hex32(start_ctx.gpr[2])
-                      << " pc=" << psprecomp::hex32(start_ctx.pc) << "\n";
-            log_scene_state(runtime, "after-start");
+            if (std::getenv("PSPRECOMP_TOW2_SCENE_REG") != nullptr) {
+                psprecomp::AllegrexContext reg_ctx = ctx;
+                reg_ctx.set_gpr(4, scene_manager);
+                reg_ctx.set_gpr(5, 0u);
+                reg_ctx.set_gpr(6, 0u);
+                reg_ctx.set_gpr(7, scene_manager); // candidate scene object
+                reg_ctx.set_gpr(8, 0u);
+                reg_ctx.set_gpr(9, 0u);
+                reg_ctx.set_gpr(29, ctx.gpr[29] - 0x2000u);
+                const bool reg_ok = run_isolated_aot(
+                    runtime, reg_ctx, 0x08814AECu, kIsolatedReturnSentinel,
+                    200000, "scene-reg");
+                std::cerr << "[tow2-scene] register ok=" << (reg_ok ? 1 : 0)
+                          << " object=" << psprecomp::hex32(scene_manager)
+                          << " fields=" << psprecomp::hex32(
+                                 runtime.memory().load32(scene_manager + 15340u))
+                          << "," << psprecomp::hex32(
+                                 runtime.memory().load32(scene_manager + 15348u))
+                          << "\n";
+            }
+            for (std::uint32_t mode = 0; mode < 3u; ++mode) {
+                start_ctx.set_gpr(4, scene_manager);
+                start_ctx.set_gpr(5, mode);
+                const bool start_ok = run_isolated_aot(
+                    runtime, start_ctx, 0x08814628u, kIsolatedReturnSentinel,
+                    2000000, "scene-start");
+                std::cerr << "[tow2-scene] start(" << mode
+                          << ") ok=" << (start_ok ? 1 : 0)
+                          << " ret=" << psprecomp::hex32(start_ctx.gpr[2])
+                          << " pc=" << psprecomp::hex32(start_ctx.pc) << "\n";
+                log_scene_state(runtime, "after-start");
+            }
         }
 
         if (title_object != 0u &&
