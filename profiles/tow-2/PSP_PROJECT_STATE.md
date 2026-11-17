@@ -7,7 +7,7 @@
 ## Repository
 
 - PSPRecomp path: `D:\Personal\C++\tales-of-world-psprecomp`
-- Git branch / commit: `master` / `bbc01a0`
+- Git branch / commit: `master` / `de04a3e`
 - Working tree: tow-2 profile and host are present; framework bring-up patch
   is pinned under `progress/`.
 - OS / compiler / generator: Windows / MSVC 14.51 / Ninja
@@ -64,8 +64,56 @@ Last verified result:
 - Missing seeds `0x0896FFB8` and `0x08970A00` were added via
   `PSPRECOMP_EXTRA_FUNCTIONS`; corpus regenerated (5 units) and rebuilt.
 - The title task entry was corrected to `0x0896FFB8`.
-- The title task still does not reach `0x08970A00`; it stalls in
-  `sceKernelSleepThreadCB` (`0x08A703D8`). `title.arc` is not opened.
+- **`title.arc` is reached**: the engine's own synchronous open wrapper
+  `0x08A7384C` opens `disc0:/PSP_GAME/USRDIR/title/title.arc` (fd 6) and the
+  host's native EZBIND reader parses it (version 4, 21 entries).
+- The run then continues to the dispatch limit at `0x08A5F69C` without a
+  guest fault when the mount/find probes are disabled.
+
+## EZBIND and the title archive (2026-11-17)
+
+Decoded from `title/title.arc` and the engine code; `EZBIND` is a plain
+container format, **not** PSP-specific, so the recompiled guest parser does not
+need a hardware override.
+
+- On-disk layout (v4):
+  - `0x00` `char magic[8]` = `"EZBIND\0\0"`
+  - `0x08` `u32 count`
+  - `0x0C` `u32 version` (4)
+  - `0x10` `entry entries[count]`, 16 bytes each:
+    `{ u32 name_offset; u32 size; u32 data_offset; u32 hash; }`
+  - `name_offset` and `data_offset` are absolute file offsets; names are
+    NUL-terminated; data starts 4-byte aligned.
+  - `hash` is an engine hash: it is **not** CRC32 of the data and **not**
+    CRC32 of the name.
+- `title/title.arc`: 1,369,296 bytes, version 4, 21 entries
+  (`sky.ppt`, `layer_01.ppt`, ..., `lisence.ppt`). Entry names omit the
+  `TitleArchive/` prefix used by the EBOOT string pool.
+- Title archive mount routine: **`0x088206D8`**. It passes
+  `"title/title.arc"` (`0x08C23BB0`) and the mount point `"TitleArchive/"`
+  (`0x08C23BC0`) to the VFS mount **`0x08A59210(manager, prefix, source)`**.
+  - The earlier diagnostic used `0x08C239B0`, which is 0x200 bytes low and
+    points at `"/water_02.ppt"`; that is why the first forced open missed.
+  - `0x088206D8` is referenced only from a relocated data pointer, so it never
+    runs in the current native boot path.
+- Engine file I/O:
+  - sync open wrapper **`0x08A7384C`** (UMD drive-stat check, then
+    `sceIoOpen` at `0x08AEDB48`); this is the path used by the verified run.
+  - async open `sceIoOpenAsync` (`0x08AEDB18`) has exactly one call site
+    (`generated_unit_0304.cpp`), inside the async file worker.
+- Native reader: `host/tow2_ezbind.{hpp,cpp}`. Every `.arc` opened by the
+  guest is parsed by `inspect_ezbind_archive()` and cached in
+  `g_ezbind_archives` (lookup via `find_ezbind_archive`).
+- Diagnostic runtime notes:
+  - `Runtime::invoke_isolated_aot` executes **one** dispatch only; a guest
+    routine that calls an import returns at the import PC. Use the profile
+    helper `run_isolated_aot()` (loops dispatch until a return sentinel).
+  - `PSPRECOMP_TOW2_EZBIND_PROBE=1` calls `0x08A7384C` with the full
+    `disc0:` path and proves the archive is reachable.
+  - `PSPRECOMP_TOW2_TITLE_MOUNT` / `PSPRECOMP_TOW2_VFS_FIND` currently do not
+    complete (`mount ok=0`) and corrupt guest state (later null access at
+    `0x08A0F9C4`); keep them off until the mount's first unresolvable call is
+    traced.
 
 ## Current diagnosis
 
@@ -119,10 +167,14 @@ Last verified result:
   direct generated references; the constructor installs them through
   relocated data pointers.
 - `0x08A5FDBC` is a sub-block and has no static reference.
-- `title.arc` remains unopened.
-- Next test: find the `c2c2Sprite` constructor via relocated data and trace
-  the title-screen manager/activation, not actor vtables, toward `title.arc`.
-- `title.arc` is still not opened.
+- **`title.arc` is now open and parsed** (see the EZBIND section above).
+- Remaining title-path gate: the automatic scene transition still never asks
+  the VFS for a `TitleArchive/...` file, so the archive is reached only
+  through the `PSPRECOMP_TOW2_EZBIND_PROBE` diagnostic. The scene id stays
+  `0xFFFF` and the title creator runs actor updates only.
+- Next test: make the title scene's asset request path run (it eventually
+  opens `TitleArchive/<name>` through the VFS), instead of calling the engine
+  open wrapper directly.
 
 ## HLE surface
 

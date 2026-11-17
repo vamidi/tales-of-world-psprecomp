@@ -1,6 +1,7 @@
 #include "tow2_hle.h"
 
 #include "tow2_atrac.hpp"
+#include "tow2_ezbind.hpp"
 #include "tow2_mpeg.hpp"
 #include "tow2_window.hpp"
 
@@ -206,6 +207,10 @@ std::unordered_map<std::int32_t, FileHandle> g_files;
 std::int32_t g_next_fd = 3;
 std::uint64_t g_read_diag_count = 0;
 std::uint64_t g_lseek_diag_count = 0;
+
+// EZBIND archives opened by the guest, parsed natively so the host can resolve
+// entries without re-running the guest container parser.
+std::unordered_map<std::string, tow2::EzbindArchive> g_ezbind_archives;
 
 struct DirHandle {
     std::vector<std::filesystem::directory_entry> entries;
@@ -811,6 +816,20 @@ void wait_thread_end(psprecomp::Runtime &runtime, psprecomp::AllegrexContext &ct
     }
 }
 
+constexpr std::uint32_t kIsolatedReturnSentinel = 0xDEADBEEFu;
+
+bool run_isolated_aot(psprecomp::Runtime &runtime,
+                      psprecomp::AllegrexContext &ctx, std::uint32_t entry,
+                      std::uint32_t return_sentinel, int max_steps = 200000) {
+    ctx.pc = entry;
+    ctx.set_gpr(31, return_sentinel);
+    for (int step = 0; step < max_steps; ++step) {
+        if (ctx.pc == return_sentinel) return true;
+        if (!runtime.invoke_isolated_aot(ctx.pc, ctx)) return false;
+    }
+    return false;
+}
+
 void delete_thread(psprecomp::Runtime &runtime, psprecomp::AllegrexContext &ctx) {
     const std::int32_t uid = static_cast<std::int32_t>(ctx.gpr[4]);
     if (uid == g_scheduler.current_uid) {
@@ -903,13 +922,81 @@ void delete_thread(psprecomp::Runtime &runtime, psprecomp::AllegrexContext &ctx)
             }
             psprecomp::AllegrexContext load_ctx = ctx;
             load_ctx.set_gpr(4, title_object);
-            load_ctx.set_gpr(29, ctx.gpr[29] - 0x800u);
-            load_ctx.set_gpr(31, 0x08A4B118u);
-            load_ctx.pc = 0x08A4B0FCu;
-            const bool load_ok =
-                runtime.invoke_isolated_aot(0x08A4B0FCu, load_ctx);
+            load_ctx.set_gpr(29, ctx.gpr[29] - 0x1000u);
+            const bool load_ok = run_isolated_aot(runtime, load_ctx, 0x08A4B0FCu,
+                                                  kIsolatedReturnSentinel);
             std::cerr << "[tow2-title] load ok=" << (load_ok ? 1 : 0)
                       << " object=" << psprecomp::hex32(title_object) << "\n";
+            if (std::getenv("PSPRECOMP_TOW2_TITLE_ARC_OPEN") != nullptr) {
+                psprecomp::AllegrexContext arc_ctx = ctx;
+                arc_ctx.set_gpr(4, 0x08C23BB0u); // "title/title.arc"
+                arc_ctx.set_gpr(5, 0u);
+                arc_ctx.set_gpr(29, ctx.gpr[29] - 0x2000u);
+                const bool open_ok = run_isolated_aot(
+                    runtime, arc_ctx, 0x08A7384Cu, kIsolatedReturnSentinel);
+                std::cerr << "[tow2-title] title.arc open ok="
+                          << (open_ok ? 1 : 0)
+                          << " ret=" << psprecomp::hex32(arc_ctx.gpr[2])
+                          << "\n";
+            }
+            if (std::getenv("PSPRECOMP_TOW2_TITLE_MOUNT") != nullptr) {
+                // 0x088206D8 is the title-screen archive-mount routine
+                // ("title/title.arc" -> mount point "TitleArchive/"). It is
+                // only referenced from a relocated data pointer, so it never
+                // runs through the normal boot path in the native port.
+                psprecomp::AllegrexContext mount_ctx = ctx;
+                mount_ctx.set_gpr(4, 0u);
+                mount_ctx.set_gpr(29, ctx.gpr[29] - 0x2000u);
+                const bool mount_ok = run_isolated_aot(
+                    runtime, mount_ctx, 0x088206D8u, kIsolatedReturnSentinel);
+                std::cerr << "[tow2-title] mount ok=" << (mount_ok ? 1 : 0)
+                          << " ret=" << psprecomp::hex32(mount_ctx.gpr[2])
+                          << "\n";
+            }
+            if (std::getenv("PSPRECOMP_TOW2_VFS_FIND") != nullptr) {
+                // Probe the engine VFS mount table after the title mount:
+                // manager = 0x08AC5338(), then 0x08A59378(manager, path).
+                psprecomp::AllegrexContext mgr_ctx = ctx;
+                mgr_ctx.set_gpr(29, ctx.gpr[29] - 0x1000u);
+                const bool mgr_ok = run_isolated_aot(
+                    runtime, mgr_ctx, 0x08AC5338u, kIsolatedReturnSentinel);
+                const std::uint32_t manager = mgr_ctx.gpr[2];
+                std::cerr << "[tow2-vfs] manager ok=" << (mgr_ok ? 1 : 0)
+                          << " value=" << psprecomp::hex32(manager) << "\n";
+                psprecomp::AllegrexContext find_ctx = ctx;
+                find_ctx.set_gpr(4, manager);
+                find_ctx.set_gpr(5, 0x08C239A4u); // "TitleArchive/water_02.ppt"
+                find_ctx.set_gpr(29, ctx.gpr[29] - 0x2000u);
+                const bool find_ok = run_isolated_aot(
+                    runtime, find_ctx, 0x08A59378u, kIsolatedReturnSentinel);
+                std::cerr << "[tow2-vfs] find ok=" << (find_ok ? 1 : 0)
+                          << " ret=" << psprecomp::hex32(find_ctx.gpr[2])
+                          << "\n";
+            }
+            if (std::getenv("PSPRECOMP_TOW2_EZBIND_PROBE") != nullptr) {
+                // Drive the engine's own synchronous open wrapper
+                // (0x08A7384C) with the title archive path. Opening the file
+                // through guest code proves the path is reachable; the host
+                // then parses the container natively in inspect_ezbind_archive.
+                constexpr char kTitleArchive[] =
+                    "disc0:/PSP_GAME/USRDIR/title/title.arc";
+                const std::uint32_t text = ctx.gpr[29] - 0x80u;
+                bool writable = runtime.memory().contains(text, sizeof(kTitleArchive));
+                for (std::size_t i = 0; writable && i < sizeof(kTitleArchive); ++i) {
+                    runtime.memory().store8(text + static_cast<std::uint32_t>(i),
+                                            static_cast<std::uint8_t>(kTitleArchive[i]));
+                }
+                psprecomp::AllegrexContext open_ctx = ctx;
+                open_ctx.set_gpr(4, text);
+                open_ctx.set_gpr(5, 1u);
+                open_ctx.set_gpr(6, 0u);
+                open_ctx.set_gpr(29, ctx.gpr[29] - 0x2000u);
+                const bool open_ok = run_isolated_aot(
+                    runtime, open_ctx, 0x08A7384Cu, kIsolatedReturnSentinel);
+                std::cerr << "[tow2-title] title.arc guest open ok="
+                          << (open_ok ? 1 : 0)
+                          << " fd=" << psprecomp::hex32(open_ctx.gpr[2]) << "\n";
+            }
 
             psprecomp::AllegrexContext creator_ctx{};
             creator_ctx.gpr[4] = 0u;
@@ -1368,8 +1455,38 @@ bool is_device_root(const std::string &psp_path) {
     return rest.empty();
 }
 
-std::filesystem::path umd_image_path(psprecomp::Runtime &runtime) {
-    if (const char *configured = std::getenv("PSPRECOMP_TOW2_ISO");
+const tow2::EzbindArchive *find_ezbind_archive(const std::string &psp_path) {
+    const auto it = g_ezbind_archives.find(psp_path);
+    return it == g_ezbind_archives.end() ? nullptr : &it->second;
+}
+
+void inspect_ezbind_archive(const std::filesystem::path &host_path,
+                            const std::string &psp_path) {
+    if (host_path.extension() != ".arc") return;
+    if (g_ezbind_archives.contains(psp_path)) return;
+
+    tow2::EzbindArchive archive;
+    std::string error;
+    if (!archive.load(host_path, &error)) {
+        if (file_diag()) {
+            std::cerr << "[tow2][ezbind] skip \"" << psp_path << "\": " << error
+                      << "\n";
+        }
+        return;
+    }
+
+    std::cerr << "[tow2][ezbind] archive=\"" << psp_path << "\" version="
+              << archive.version() << " entries=" << archive.entries().size()
+              << "\n";
+    for (const auto &entry : archive.entries()) {
+        std::cerr << "[tow2][ezbind]   " << entry.name << " off="
+                  << entry.data_offset << " size=" << entry.size << " hash="
+                  << psprecomp::hex32(entry.hash) << "\n";
+    }
+    g_ezbind_archives.emplace(psp_path, std::move(archive));
+}
+
+std::filesystem::path umd_image_path(psprecomp::Runtime &runtime) {    if (const char *configured = std::getenv("PSPRECOMP_TOW2_ISO");
         configured != nullptr && *configured != '\0') {
         return std::filesystem::path(configured);
     }
@@ -1433,6 +1550,7 @@ std::int32_t open_host_file(psprecomp::Runtime &runtime, const std::string &psp_
         std::cerr << "[tow2][io] open fd=" << fd << " size=" << g_files[fd].size
                   << " \"" << psp_path << "\"\n";
     }
+    inspect_ezbind_archive(host_path, psp_path);
     return fd;
 }
 
