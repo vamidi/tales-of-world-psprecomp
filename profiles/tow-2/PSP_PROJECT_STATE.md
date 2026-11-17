@@ -449,7 +449,20 @@ source field at `+264` (the same field `0x08A59210` stores). Driving it:
 Result: no match, no open (`ret=0`). So either `[node+8]` is not the plain
 source string, or this walker expects a different key/typed string object.
 
-No `TitleArchive` open in this test.
+Follow-up controls:
+
+- `0x08AA9BE4` is a plain **strcmp** (byte loop with null handling), so a raw
+  `char*` is the correct argument type.
+- The walker does find the mount node and reads its source:
+  `name=0x08F11B40 "title/title.arc" src=0x08DA1270 svt=0x08C703F0`.
+- The return value is **always 0**: a negative control
+  (`RESOLVE="zzz_not_a_file"`) also returns `0`, so `ret` is not a match
+  signal. The walker is not usable as a probe of "found/not found".
+- Neither query produced any I/O (`ret=0`, no `[io]` line).
+
+Conclusion: `0x08A58D3C` is a *source-name* walker whose matched virtual is not
+the archive body reader. The mount source object is `0x08DA1270`
+(vtable `0x08C703F0`); its `vtable+36` slot needs to be identified directly.
 
 ## Title scene ordering (2026-11-17)
 

@@ -579,9 +579,55 @@ void scene_caller_hook(psprecomp::Runtime &runtime,
                     500000, "resolve");
                 std::cerr << "[tow2-resolve] query=\"" << query
                           << "\" manager_ok=" << (manager_ok ? 1 : 0)
+                          << " manager=" << psprecomp::hex32(manager)
                           << " ok=" << (resolve_ok ? 1 : 0)
                           << " ret=" << psprecomp::hex32(resolve_ctx.gpr[2])
                           << "\n";
+                if (manager != 0u &&
+                    runtime.memory().contains(manager + 16u, 8u)) {
+                    const std::uint32_t head =
+                        runtime.memory().load32(manager + 16u);
+                    std::cerr << "[tow2-resolve] head="
+                              << psprecomp::hex32(head)
+                              << " sentinel=" << psprecomp::hex32(manager + 16u);
+                    if (head != manager + 16u &&
+                        runtime.memory().contains(head + 8u, 4u)) {
+                        const std::uint32_t name =
+                            runtime.memory().load32(head + 8u);
+                        std::cerr << " name=" << psprecomp::hex32(name)
+                                  << " \""
+                                  << (runtime.memory().contains(name, 1u)
+                                          ? runtime.memory().read_c_string(name, 64u)
+                                          : std::string())
+                                  << "\"";
+                        if (runtime.memory().contains(name + 264u, 4u)) {
+                            const std::uint32_t source =
+                                runtime.memory().load32(name + 264u);
+                            std::cerr << " src=" << psprecomp::hex32(source);
+                            if (source != 0u &&
+                                runtime.memory().contains(source, 4u)) {
+                                const std::uint32_t svtable =
+                                    runtime.memory().load32(source);
+                                std::cerr << " svt="
+                                          << psprecomp::hex32(svtable);
+                                if (runtime.memory().contains(svtable + 36u, 4u)) {
+                                    std::cerr << " open="
+                                              << psprecomp::hex32(
+                                                     runtime.memory().load32(
+                                                         svtable + 36u));
+                                }
+                                for (std::uint32_t index = 0; index < 12u;
+                                     ++index) {
+                                    std::cerr << " svt+" << index * 4u << "="
+                                              << psprecomp::hex32(
+                                                     runtime.memory().load32(
+                                                         svtable + index * 4u));
+                                }
+                            }
+                        }
+                    }
+                    std::cerr << "\n";
+                }
             }
             if (std::getenv("PSPRECOMP_TOW2_VFS_CHECK") != nullptr) {
                 psprecomp::AllegrexContext manager_ctx = ctx;
