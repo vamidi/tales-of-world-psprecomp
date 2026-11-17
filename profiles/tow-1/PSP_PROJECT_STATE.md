@@ -470,6 +470,14 @@ timeline.
 Remote debugger is enabled (`RemoteDebuggerOnStartup = True`) and listens on
 `ws://127.0.0.1:52814/debugger`.
 
+PPSSPP MCP (`mcp-ppsspp` 0.2.0) exposes no savestate save/load call; its
+documented substitute is PPSSPP's own hotkeys/UI. The portable
+`memstick/PSP/PPSSPP_STATE` and `SAVEDATA` directories are empty, and no
+`.ppst` state exists under the workspace or user profile. The current PPSSPP
+instance is on the title/attract screen, so there is no town-map state to
+load yet. The MCP screenshot call still returns `Could not download output`;
+a Windows `PrintWindow` capture of the PPSSPP window works.
+
 If the game does not progress in PPSSPP either, install PSP firmware
 6.60/6.61 in PPSSPP before trying to extract the decrypted module.
 
