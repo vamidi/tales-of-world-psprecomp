@@ -378,6 +378,48 @@ located in the generated corpus. Next options: trace `0x08AAAF48` (the hash
 used when creating the mount entry) and search for comparisons against that
 hash, or use PPSSPP as an oracle to capture the real request call site.
 
+### `0x08AAAF48` is `strlen`, not a hash (2026-11-17)
+
+Disassembly of `0x08AAAF48`:
+
+```
+0x08AAAF48:
+    v0 = a0 + 1
+loop:
+    v1 = *(u8*)a0
+    a0 += 1
+    if (v1 != 0) goto loop
+    return a0 - v0        // length
+```
+
+So the mount entry does **not** store a name hash. `0x08A59210` stores
+`strlen("TitleArchive/") = 13` at the entry, and the prefix bytes inline:
+that is exactly the `+0x80 = 13` / `+0x84 = "TitleArchive/"` pair seen in the
+mount node. The neighbouring `0x08AAAF60` lowercases characters using the
+table at `0x08BF24FD`, i.e. case normalisation for path comparison.
+
+Consequence: the resolver is a **length + case-normalised byte prefix match**,
+not a hash comparison. Searching for hash comparisons is a dead end.
+
+### PPSSPP oracle session (2026-11-17)
+
+PPSSPP v1.20.4 is reachable with the same title (ULJS00175, v1.01) and
+execution breakpoints work.
+
+- Breakpoint on `sceIoOpen` (`0x08AEDB48`) after reset caught, in order:
+  - `a0=0x08C3B5CC "umd1:"`, `ra=0x08A5A358` (FileReadingTask)
+  - `a0=0x08C23AD0 "ms0:/PSP/SAVEDATA/..."`, `ra=0x0881D7E0`
+- Breakpoint on the archive mount `0x08A59210` ran for >2 minutes without a
+  hit. The game idles with `[0x08D14F2C] -> 0x08D9B9A0`, `scene+4 = 0xFFFF`,
+  and `pc = 0x08A763A0` (the same `0x08A763D4` family called by
+  `0x088206D8`). Scene `0xFFFF` is therefore not unique to the native port.
+- Screenshot capture is broken in this MCP build (`Could not download output`),
+  and the memory-scan tool is not exposed, so the title screen state cannot be
+  confirmed visually from here.
+
+No `TitleArchive` open was observed in either the native port or the PPSSPP
+window.
+
 ## Title scene ordering (2026-11-17)
 
 Goal: start the title mount before `user_main` resumes, then observe
