@@ -701,6 +701,12 @@ serving the title archive.
   scene and no movie**: the frame loop only clears. The idle title -> intro
   movie replay seen on hardware needs the next scene/movie request, which is
   never issued in the port.
+- The same run with the title trigger set
+  (`TITLE_TRIGGER` + `TITLE_MOUNT_THREAD` + `HOLD_USER_MAIN`) produces the
+  identical timeline (11,983 presents, title then white). In that
+  configuration `user_main` is held at `0x08A63398` and the probe's mount
+  thread (uid 10) runs; the intro movie still does **not** replay
+  (`sceMpegCreate`/`Init` run exactly once, with no delete/finish).
 
 ### GE renderer ported; title screen renders (2026-11-18)
 
