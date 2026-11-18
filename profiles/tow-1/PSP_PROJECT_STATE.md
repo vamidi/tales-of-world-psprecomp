@@ -134,7 +134,9 @@ Last verified result:
   - **Not yet captured:** selecting Guild from the town menu and opening the
     quest list. The current R/Quit/stairs input sequence is frame-sensitive;
     the same route sometimes lands in the menu and sometimes reopens the shop
-    menu. A stable selector is still needed.
+    menu. `guild_select.ppm.52000` / `guild_menu_auto.ppm.62000` show the
+    post-selection Dalia room, but that room is still the shop/Inn building,
+    not the verified guild counter. A stable selector is still needed.
 - Earlier field-route attempts (`field_down*`, `field_left*`, `field_right*`,
   `field_south_camera.png`) are retained as route evidence.
 - OSK status sequence is now correct:
@@ -501,8 +503,11 @@ The full import/HLE matrix and milestone order live in
 
 ## Next steps
 
-1. Complete the Inn/plaza NPC tour, return to the Ailily guild, and capture the
-   quest counter/list dialogue (the five starting quests).
+1. Select **Guild** from the Ailily town menu and capture the quest
+   counter/list dialogue (the five starting quests). The menu is verified in
+   `shop_stairs.ppm.51500.png`; the current R/Quit/stairs script is
+   frame-sensitive, so first make the cursor selection stable (or use a visible
+   manual run).
 2. Re-check `cSoundManager`: it should resume at `0x08B1CE44` once the title
    frame loop runs; silent SAS is still acceptable until audio is required.
 3. Compare native frames with PPSSPP during the movie/title transition.
