@@ -538,6 +538,48 @@ Emulator confirmed on the target SKU (`ULJS00175` v1.01).
 Native gap: the port never reaches `0x08A59C10` → `0x08A59378` with a
 `TitleArchive/...` query. The mount itself is valid.
 
+### Fixed: title path now issues and resolves TitleArchive assets (2026-11-18)
+
+The requests were never missing — they were invisible. They go through the
+VFS resolve API `0x08A59C10`, not `sceIoOpen`, so `FILE_DIAG` could not see
+them. With the title scene started
+(`TITLE_TRIGGER` + `TITLE_MOUNT_THREAD` + `HOLD_USER_MAIN` + `SCENE_REG` +
+`SCENE_START`), the port issues the full title asset sequence:
+
+```
+system/common.ppt, system/skit.ppt, game/savedata.bin,
+system/Nowloading.ppt/eai,
+title/title.arc,
+TitleArchive/layer_01.ppt, layer_02.ppt, bird.ppt, bird.eai, sky.ppt,
+water_01.ppt/eai, water_02.ppt/eai, cloud_01.ppt, cloud_02.ppt,
+spore.ppt/eai, BNG_for_psp.ppt, NAMCO_for_psp.ppt, alfalogo.ppt,
+titlelogo_back.ppt, title.eai, titlelogo.ppt, lisence.ppt
+```
+
+Counters (`200M` run): `0x08A59C10 hits=64`, `0x08A583D8 (fallback) hits=0`,
+`0x08A59378` executes inline from `0x08A59C10`. So every resolve matched.
+
+Reverse chain proven in PPSSPP and mirrored in the port:
+
+```
+0x088206D8 -> 0x0881CDD8(obj) -> 0x0881AB98(obj+240)
+           -> 0x0881E5CC(loader) -> 0x08A59C10(manager, "TitleArchive/...")
+```
+
+Fix added: `[tow2-open]` logging in the pre-dispatch hook, and when a
+resolved path ends in `.arc` the host opens and parses it natively:
+
+```
+[tow2-open] path="title/title.arc" ra=0x08A4DABC uid=8
+[tow2][ezbind] archive="title/title.arc" version=4 entries=21
+```
+
+Remaining gap: the guest still never opens `title.arc` through the I/O HLE
+(no `[io] open` line), so entry payloads are not yet served to the guest.
+The source object returns from `find` but has no archive index of its own;
+the next step is to back it with the host `EzbindArchive` (serve entry
+bytes/decompression) instead of relying on the guest parser.
+
 ## Title scene ordering (2026-11-17)
 Goal: start the title mount before `user_main` resumes, then observe
 `TitleArchive/...` requests.

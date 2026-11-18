@@ -477,6 +477,8 @@ std::uint32_t g_last_container_state = 0xFFFFFFFFu;
 std::uint32_t g_state_prev_pc = 0u;
 
 constexpr std::uint32_t kIsolatedReturnSentinel = 0xDEADBEEFu;
+void inspect_ezbind_archive(const std::filesystem::path &host_path,
+                            const std::string &psp_path);
 bool run_isolated_aot(psprecomp::Runtime &runtime,
                       psprecomp::AllegrexContext &ctx, std::uint32_t entry,
                       std::uint32_t return_sentinel, int max_steps,
@@ -511,6 +513,26 @@ void scene_caller_hook(psprecomp::Runtime &runtime,
                   << psprecomp::hex32(g_asset_owner)
                   << " ra=" << psprecomp::hex32(ctx.gpr[31])
                   << " uid=" << thread_uid << "\n";
+    }
+    if (dispatch_pc == 0x08A59C10u) {
+        std::string path;
+        if (ctx.gpr[5] != 0u && runtime.memory().contains(ctx.gpr[5], 1u)) {
+            path = runtime.memory().read_c_string(ctx.gpr[5], 256u);
+        }
+        std::cerr << "[tow2-open] path=\"" << path << "\" ra="
+                  << psprecomp::hex32(ctx.gpr[31])
+                  << " uid=" << thread_uid << "\n";
+        if (path.size() > 4u &&
+            path.compare(path.size() - 4u, 4u, ".arc") == 0) {
+            std::error_code error;
+            std::filesystem::path host = runtime.translate_path(path);
+            if (!std::filesystem::is_regular_file(host, error)) {
+                host = runtime.game_root() / "PSP_GAME" / "USRDIR" / path;
+            }
+            if (std::filesystem::is_regular_file(host, error)) {
+                inspect_ezbind_archive(host, path);
+            }
+        }
     }
     if (dispatch_pc == 0x08817298u || dispatch_pc == 0x08813874u ||
         dispatch_pc == 0x08814460u || dispatch_pc == 0x0881460Cu ||
