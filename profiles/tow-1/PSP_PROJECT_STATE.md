@@ -28,8 +28,9 @@
 - Module / gp: `TOW_MAIN_ALFASYSTEM` / `0x08DBA950`
 - Current phase: 7 — gameplay stability. Character creation, field movement,
   camera reset, the field menu, the first soldier battle, basic combat,
-  battle item/Artes/Unison menus, post-battle dialogue, and town NPC
-  interaction are verified. The guild/quest counter is the next gate.
+  battle item/Artes/Unison menus, post-battle dialogue, town NPC interaction,
+  and the Ailily guild entrance/cutscene are verified. The guild quest
+  counter/list is the next gate.
 
 ## Analysis and corpus
 
@@ -109,9 +110,17 @@ Last verified result:
     — town movement and NPC dialogue.
   - `town_guild7.png` / `guild_counter2.png` — the diagonal town route entered
     a **Weapon Shop**, not the guild; the shop owner dialogue was captured.
-    The Ad Libitum guild/quest counter has not yet been reached.
-  - `town_left_building.png` — alternate left-side route (benches/stairs);
-    also not the guild.
+  - `town_left_building.png` — alternate left-side route (benches/stairs).
+  - **Ailily guild reached.** From the plaza, hold `Up` to the red-carpet
+    stairs, then `Up+Right` to enter the Ad Libitum guild:
+    `22000:4000:0x0010, 26000:4000:0x0030`.
+    - `town_climb.ppm.27000`-`32000` — guild interior cutscene with Raine,
+      Kratos, Kanonno, and Mormo.
+    - `guild_cutscene.ppm.27000`-`52000` — extended Raine/Kanonno dialogue.
+    - After the first-visit cutscene the game transitions back to town/Inn;
+      the quest-counter list is not available in this first visit. The story
+      requires the Inn/plaza NPC tour and a guild return before the five
+      starting quests appear.
 - Earlier field-route attempts (`field_down*`, `field_left*`, `field_right*`,
   `field_south_camera.png`) are retained as route evidence.
 - OSK status sequence is now correct:
@@ -471,12 +480,19 @@ Remote debugger is enabled (`RemoteDebuggerOnStartup = True`) and listens on
 `ws://127.0.0.1:52814/debugger`.
 
 PPSSPP MCP (`mcp-ppsspp` 0.2.0) exposes no savestate save/load call; its
-documented substitute is PPSSPP's own hotkeys/UI. The portable
-`memstick/PSP/PPSSPP_STATE` and `SAVEDATA` directories are empty, and no
-`.ppst` state exists under the workspace or user profile. The current PPSSPP
-instance is on the title/attract screen, so there is no town-map state to
-load yet. The MCP screenshot call still returns `Could not download output`;
-a Windows `PrintWindow` capture of the PPSSPP window works.
+documented substitute is PPSSPP's own hotkeys/UI. On 2026-11-18 the running
+PPSSPP instance had switched to **Radiant Mythology 2** (`ULJS00175` v1.01),
+not this profile's **Radiant Mythology** (`ULES00837`). A ToW1 town-map state
+therefore cannot be loaded into it. Load `ULES00837` before capturing the
+PPSSPP town map. The MCP screenshot call still returns
+`Could not download output`; a Windows `PrintWindow` capture works, but it
+can show the last rendered frame even when the window is black or covered.
+
+The native exploration runs are headless (`PSPRECOMP_TOW1_NO_WINDOW=1`):
+there is intentionally no visible `Tow1Native` window, and each captured PPM
+comes directly from `window_present`. Remove `NO_WINDOW` to watch it live.
+The black `TOLRecomp` window on the desktop belongs to the separate
+`tales-of-legendia-ps2recomp` project, not to this profile.
 
 If the game does not progress in PPSSPP either, install PSP firmware
 6.60/6.61 in PPSSPP before trying to extract the decrypted module.
