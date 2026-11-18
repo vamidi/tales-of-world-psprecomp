@@ -48,7 +48,7 @@ $evidence = [ordered]@{
     'battle items/unison' = @('battle_menu_items.png', 'battle_menu_unison.png')
     'post-battle scene'   = @('post_battle_chester.png')
     'town movement/NPC'   = @('town_return.png', 'town_interaction.png')
-    'Ailily guild'        = @('town_climb.ppm.32000.png', 'guild_cutscene.ppm.40000.png')
+    'Ailily guild'        = @('town_climb.ppm.32000.png', 'guild_cutscene.ppm.40000.png', 'shop_stairs.ppm.51500.png')
     'guild quest counter' = @()
 }
 $milestones = foreach ($name in $evidence.Keys) {

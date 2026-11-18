@@ -4,6 +4,8 @@
 #include "vcs_project2dfx.hpp"
 #include "vcs_fps_overlay.hpp"
 
+#include "../tow1_window.hpp"
+
 #include "psprecomp/common.hpp"
 
 #include <algorithm>
@@ -1890,6 +1892,17 @@ std::uint32_t texture_address(const std::array<std::uint32_t, 256> &commands) no
 // PSPRECOMP_GE_GPU_SKIP_DISPLAYED_RASTER=0 and say so in the handoff. The
 // structural fix that removes the conditions entirely is the GPU-to-GPU path.
 bool software_raster_skipped(const std::array<std::uint32_t, 256> &commands) noexcept {
+    // Fast-forward exploration for tow-1: keep GE list execution and guest
+    // synchronization intact, but skip the expensive software raster until the
+    // requested post-OSK present. Unlike GE_DISABLE, this does not discard the
+    // list contract, so gameplay state continues to advance normally.
+    if (const char *text =
+            std::getenv("PSPRECOMP_TOW1_GE_SKIP_RASTER_UNTIL_PRESENT");
+        text != nullptr && *text != '\0') {
+        const std::uint32_t limit = static_cast<std::uint32_t>(
+            std::strtoul(text, nullptr, 0));
+        if (tow1::window_post_osk_present_count() < limit) return true;
+    }
     static const bool skip_everything = [] {
         const char *value = std::getenv("PSPRECOMP_GE_GPU_SKIP_SOFTWARE_RASTER");
         if (value != nullptr && *value != '\0') return *value != '0';

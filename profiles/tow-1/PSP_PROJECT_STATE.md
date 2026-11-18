@@ -121,6 +121,20 @@ Last verified result:
       the quest-counter list is not available in this first visit. The story
       requires the Inn/plaza NPC tour and a guild return before the five
       starting quests appear.
+  - **Ailily town menu reached.** `shop_stairs.ppm.51500.png` shows the
+    world-map-style town menu over the Ailily illustration:
+    `Guild`, `Inn`, `Tool shop`, `Accessories`, `Plaza`, `1st House`,
+    `2nd House`, `Exit town`.
+    The highlighted Guild description is
+    **“Accept a new quest or change jobs.”**
+  - The weapon-shop owner path is also verified: holding `Up` at the counter
+    opens the **Weapon Shop Buy/Sell/Exchange/Cancel** menu
+    (`inn_up.ppm.44500`-`50000`). This exercises the generated shop/menu AOT
+    functions; it is not the guild counter.
+  - **Not yet captured:** selecting Guild from the town menu and opening the
+    quest list. The current R/Quit/stairs input sequence is frame-sensitive;
+    the same route sometimes lands in the menu and sometimes reopens the shop
+    menu. A stable selector is still needed.
 - Earlier field-route attempts (`field_down*`, `field_left*`, `field_right*`,
   `field_south_camera.png`) are retained as route evidence.
 - OSK status sequence is now correct:
@@ -569,6 +583,12 @@ If the game does not progress in PPSSPP either, install PSP firmware
 - `PSPRECOMP_TOW1_HEAP_DIAG=1`
 - `PSPRECOMP_GE_STATS=1`
 - `PSPRECOMP_GE_DIAG=1`
+- `PSPRECOMP_TOW1_GE_SKIP_RASTER_UNTIL_PRESENT=N` — keep GE list execution and
+  guest synchronization, but skip the expensive software raster until post-OSK
+  present `N`; used to fast-forward long town routes then capture.
+- `PSPRECOMP_TOW1_GE_DISABLE_UNTIL_PRESENT=N` — skip GE list execution until
+  `N`; faster still, but gameplay can stall on a black frame because list sync
+  is discarded. Prefer the skip-raster variable.
 - `PSPRECOMP_TOW1_FRAME_DIAG=1`
 - `PSPRECOMP_TOW1_FRAME_DUMP=...`
 - `PSPRECOMP_EXTRA_FUNCTIONS=0x...` (generator extra entry seeds)

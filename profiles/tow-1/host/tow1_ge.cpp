@@ -120,8 +120,19 @@ void trace_sublist(psprecomp::GuestMemory &memory, const char *kind,
     std::cerr << "\n";
 }
 
-bool run_list(psprecomp::Runtime &runtime, std::uint32_t list, std::uint32_t stall) {
+bool ge_frame_disabled() {
     if (std::getenv("PSPRECOMP_TOW1_GE_DISABLE") != nullptr) return true;
+    if (const char *text = std::getenv("PSPRECOMP_TOW1_GE_DISABLE_UNTIL_PRESENT");
+        text != nullptr && *text != '\0') {
+        const std::uint32_t limit = static_cast<std::uint32_t>(
+            std::strtoul(text, nullptr, 0));
+        if (window_post_osk_present_count() < limit) return true;
+    }
+    return false;
+}
+
+bool run_list(psprecomp::Runtime &runtime, std::uint32_t list, std::uint32_t stall) {
+    if (ge_frame_disabled()) return true;
     auto &memory = runtime.memory();
     if (std::getenv("PSPRECOMP_TOW1_GE_SUBLIST_TRACE") != nullptr) {
         static bool saw_nonzero = false;
