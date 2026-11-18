@@ -134,6 +134,48 @@ Last verified result:
   364k, `sceSasGetEndFlag` 247k, `sceSasGetEnvelopeHeight` 265k,
   `sceDisplaySetFrameBuf` 15.5k.
 
+## Port coverage (2026-11-18)
+
+A single percentage would mix unrelated layers. Use this scorecard instead;
+`scripts/port_status.ps1` prints it and checks that the evidence files exist.
+
+| Layer | Status | Measurement |
+|---|---|---|
+| ELF load / relocations | **complete** | 277,206 relocations; 0 invalid, 0 unsupported |
+| AOT corpus | **complete for this ELF** | 48,179 seeds; 654 units; 122.23 MB; 300 analyzer-truncated functions |
+| HLE imports | **present for tested paths** | 252 imports across 27 libraries; 0 missing HLE across 61 diagnostic logs |
+| CPU / VFPU / runtime | **working through tested scenes** | boot, title, character creation, field, battle, town, guild; no missing-AOT stop in the 61 logs |
+| GE rasterizer | **working through tested scenes** | title/movie, field, battle, town, guild; 0 command-limit warnings in the 61 logs |
+| Input / presenter | **working** | visible Win32 window plus scripted pad input; `tow1_visible_*.png` |
+| Movie / Atrac3+ | **real for the opening movie** | FFmpeg H.264 + PMF Atrac3+ decode |
+| SAS / BGM / voice | **stub** | silent `sceSasCore`; `sceAtrac3plus` game streams are silent |
+| Save / load | **stub** | savedata dialog completes headlessly; no real file save/load |
+| Network / ad-hoc | **deferred** | 31 imports across `sceNet*` / Adhoc libraries |
+| Automated regression | **thin** | `psprecomp_tests` 1/1 passed; gameplay is verified by frame captures |
+| Story/gameplay milestones | **12/13 verified** | prologue through the Ailily guild cutscene; guild quest counter pending |
+
+Strict definition of "playable": the port is **not yet end-to-end playable**.
+The complete main story, real audio, and real save/load are not verified.
+The working slice is:
+
+```text
+boot -> title -> character creation -> field -> first battle ->
+post-battle scene -> Ailily town -> guild cutscene
+```
+
+Measure it with:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File profiles\tow-1\scripts\port_status.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File profiles\tow-1\scripts\port_status.ps1 -SkipTests
+powershell -NoProfile -ExecutionPolicy Bypass -File profiles\tow-1\scripts\port_status.ps1 -Json
+```
+
+The script reports the report/corpus numbers, framework test result, and
+missing-HLE/missing-AOT/GE-overflow counts from the local `town_*`, `guild_*`,
+`battle_*`, `field_*`, and `inn_*` logs. Those logs are diagnostic artifacts,
+not committed source; regenerate them with the capture commands above.
+
 ## Current diagnosis
 
 - Observation: OSK completes and frame 15500 is reachable with GE disabled,
@@ -436,7 +478,8 @@ The full import/HLE matrix and milestone order live in
 
 ## Next steps
 
-1. Navigate the town to the Ailily guild and capture the quest list/dialogue.
+1. Complete the Inn/plaza NPC tour, return to the Ailily guild, and capture the
+   quest counter/list dialogue (the five starting quests).
 2. Re-check `cSoundManager`: it should resume at `0x08B1CE44` once the title
    frame loop runs; silent SAS is still acceptable until audio is required.
 3. Compare native frames with PPSSPP during the movie/title transition.
