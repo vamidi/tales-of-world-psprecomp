@@ -601,6 +601,39 @@ The “title.arc is not loaded” symptom was an I/O-visibility artifact.
 - Remaining check: confirm the guest mount source references the loaded
   buffer (`0x09BF8780`) and that entry payloads are served from it.
 
+### Mount source points at the loaded archive (2026-11-18)
+
+Probe at the first `TitleArchive/...` resolve, walking the manager list:
+
+```
+[tow2-mount] manager=0x08D4F120 guest_buffer=0x09BF8780 bytes=1370112
+[tow2-mount] node=0x08F11D40 name="title/title.arc" src=0x08DA1270
+             0x08C703F0 0x09BF8780 0x0014E4D0 0x0014E800
+```
+
+Decoded:
+
+| offset | value | meaning |
+|--------|-------|---------|
+| `src+0`  | `0x08C703F0` | source vtable |
+| `src+4`  | `0x09BF8780` | **guest buffer holding `EZBIND`** |
+| `src+8`  | `0x0014E4D0` | 1,369,296 = exact `title.arc` size |
+| `src+12` | `0x0014E800` | 1,370,112 = 669 sectors read |
+
+And the buffer itself:
+
+```
+[tow2][archive] name_table[0]="sky.ppt" entry_data_head=0x08088B1F
+```
+
+`0x08088B1F` = bytes `1f 8b 08 08` — the gzip member header of the first
+entry (`sky.ppt`).
+
+Conclusion: `title.arc` is loaded, mounted, and its source is wired to the
+in-memory EZBIND image with the correct size. No custom loader function is
+needed. The earlier “not loaded” symptom was purely I/O-visibility
+(`sceIoOpen` vs the raw sector-addressed `umd1:` read).
+
 ## Title scene ordering (2026-11-17)
 Goal: start the title mount before `user_main` resumes, then observe
 `TitleArchive/...` requests.

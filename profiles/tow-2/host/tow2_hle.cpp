@@ -475,6 +475,10 @@ int g_drive_container_countdown = -1;
 std::uint32_t g_watched_container = 0u;
 std::uint32_t g_last_container_state = 0xFFFFFFFFu;
 std::uint32_t g_state_prev_pc = 0u;
+// Guest buffer that holds the raw title.arc image (EZBIND), captured from the
+// sector-addressed UMD read.
+std::uint32_t g_title_arc_buffer = 0u;
+std::uint32_t g_title_arc_bytes = 0u;
 
 constexpr std::uint32_t kIsolatedReturnSentinel = 0xDEADBEEFu;
 void inspect_ezbind_archive(const std::filesystem::path &host_path,
@@ -522,6 +526,91 @@ void scene_caller_hook(psprecomp::Runtime &runtime,
         std::cerr << "[tow2-open] path=\"" << path << "\" ra="
                   << psprecomp::hex32(ctx.gpr[31])
                   << " uid=" << thread_uid << "\n";
+        if (path.rfind("TitleArchive/", 0) == 0) {
+            static bool dumped = false;
+            if (!dumped) {
+                dumped = true;
+                const std::uint32_t manager = ctx.gpr[4];
+                std::cerr << "[tow2-mount] manager=" << psprecomp::hex32(manager)
+                          << " guest_buffer="
+                          << psprecomp::hex32(g_title_arc_buffer)
+                          << " bytes=" << g_title_arc_bytes << "\n";
+                if (manager != 0u &&
+                    runtime.memory().contains(manager + 16u, 8u)) {
+                    std::uint32_t node = runtime.memory().load32(manager + 16u);
+                    const std::uint32_t sentinel = manager + 16u;
+                    for (int pass = 0; pass < 8 && node != 0u &&
+                                       node != sentinel; ++pass) {
+                        if (!runtime.memory().contains(node, 12u)) break;
+                        const std::uint32_t name =
+                            runtime.memory().load32(node + 8u);
+                        std::string node_name;
+                        if (name != 0u && runtime.memory().contains(name, 1u)) {
+                            node_name = runtime.memory().read_c_string(name, 64u);
+                        }
+                        std::cerr << "[tow2-mount] node="
+                                  << psprecomp::hex32(node) << " name=\""
+                                  << node_name << "\"";
+                        if (runtime.memory().contains(name + 264u, 4u)) {
+                            const std::uint32_t source =
+                                runtime.memory().load32(name + 264u);
+                            std::cerr << " src=" << psprecomp::hex32(source);
+                            if (source != 0u &&
+                                runtime.memory().contains(source, 48u)) {
+                                for (std::uint32_t k = 0; k < 12u; ++k) {
+                                    std::cerr << " "
+                                              << psprecomp::hex32(
+                                                     runtime.memory().load32(
+                                                         source + k * 4u));
+                                }
+                            }
+                        }
+                        std::cerr << "\n";
+                        node = runtime.memory().load32(node);
+                    }
+                }
+            }
+        }
+        if (path == "title/title.arc") {
+            const std::uint32_t manager = ctx.gpr[4];
+            std::cerr << "[tow2-arc] manager=" << psprecomp::hex32(manager)
+                      << " guest_buffer="
+                      << psprecomp::hex32(g_title_arc_buffer) << "\n";
+            if (manager != 0u &&
+                runtime.memory().contains(manager + 16u, 8u)) {
+                std::uint32_t node = runtime.memory().load32(manager + 16u);
+                const std::uint32_t sentinel = manager + 16u;
+                for (int index = 0; index < 8 && node != 0u &&
+                                    node != sentinel; ++index) {
+                    if (!runtime.memory().contains(node, 12u)) break;
+                    const std::uint32_t name =
+                        runtime.memory().load32(node + 8u);
+                    std::string node_name;
+                    if (name != 0u && runtime.memory().contains(name, 1u)) {
+                        node_name = runtime.memory().read_c_string(name, 64u);
+                    }
+                    std::cerr << "[tow2-arc] node=" << psprecomp::hex32(node)
+                              << " name=\"" << node_name << "\"";
+                    if (node_name == "title/title.arc" &&
+                        runtime.memory().contains(name + 264u, 4u)) {
+                        const std::uint32_t source =
+                            runtime.memory().load32(name + 264u);
+                        std::cerr << " src=" << psprecomp::hex32(source);
+                        if (source != 0u &&
+                            runtime.memory().contains(source, 40u)) {
+                            for (std::uint32_t k = 0; k < 10u; ++k) {
+                                std::cerr << " "
+                                          << psprecomp::hex32(
+                                                 runtime.memory().load32(
+                                                     source + k * 4u));
+                            }
+                        }
+                    }
+                    std::cerr << "\n";
+                    node = runtime.memory().load32(node);
+                }
+            }
+        }
         if (path.size() > 4u &&
             path.compare(path.size() - 4u, 4u, ".arc") == 0) {
             std::error_code error;
@@ -2157,6 +2246,19 @@ std::int32_t read_host_file(psprecomp::Runtime &runtime, std::int32_t fd,
                   << " bytes=" << got << " buf="
                   << psprecomp::hex32(buffer) << " head=\"" << head
                   << "\"\n";
+        g_title_arc_buffer = buffer;
+        g_title_arc_bytes = static_cast<std::uint32_t>(got);
+        if (runtime.memory().contains(buffer + 0x160u, 16u) &&
+            runtime.memory().contains(buffer + 0x26Cu, 4u)) {
+            char name[16] = {};
+            for (std::uint32_t i = 0; i < 15u; ++i) {
+                name[i] = static_cast<char>(runtime.memory().load8(buffer + 0x160u + i));
+            }
+            std::cerr << "[tow2][archive] name_table[0]=\"" << name
+                      << "\" entry_data_head="
+                      << psprecomp::hex32(runtime.memory().load32(buffer + 0x26Cu))
+                      << "\n";
+        }
     }
     if (file_diag() && g_read_diag_count < 24u) {        ++g_read_diag_count;
         const auto current = g_scheduler.threads.find(g_scheduler.current_uid);
