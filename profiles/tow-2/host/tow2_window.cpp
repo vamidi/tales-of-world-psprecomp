@@ -265,9 +265,20 @@ void window_present(const psprecomp::GuestMemory &memory, std::uint32_t address,
         std::uint32_t dump_at = 0u;
         if (const char *at_text = std::getenv("PSPRECOMP_TOW2_FRAME_DUMP_AT"))
             dump_at = static_cast<std::uint32_t>(std::strtoul(at_text, nullptr, 0));
+        std::uint32_t dump_every = 0u;
+        if (const char *every_text = std::getenv("PSPRECOMP_TOW2_FRAME_DUMP_EVERY"))
+            dump_every = static_cast<std::uint32_t>(std::strtoul(every_text, nullptr, 0));
         const bool dump_all = std::getenv("PSPRECOMP_TOW2_FRAME_DUMP_ALL") != nullptr;
-        if (dump_all || dump_count == dump_at) {
-            std::ofstream out(dump_path, std::ios::binary);
+        const bool dump_sequence = dump_every != 0u && dump_count % dump_every == 0u;
+        if (dump_all || dump_count == dump_at || dump_sequence) {
+            std::string target = dump_path;
+            if (dump_sequence && !dump_all) {
+                const auto dot = target.find_last_of('.');
+                const std::string index = "-" + std::to_string(dump_count);
+                if (dot == std::string::npos) target += index;
+                else target.insert(dot, index);
+            }
+            std::ofstream out(target, std::ios::binary);
             if (out) {
                 out << "P6\n" << kWidth << ' ' << kHeight << "\n255\n";
                 for (const std::uint32_t pixel : frame) {

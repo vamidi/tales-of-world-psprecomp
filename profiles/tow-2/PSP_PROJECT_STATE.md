@@ -666,6 +666,40 @@ raw UMD read (title.arc -> 0x09BF8780)
 No custom loader or parser override is required; the port is end-to-end
 serving the title archive.
 
+### GE renderer ported; title screen renders (2026-11-18)
+
+- Ported tow-1's software GE stack (`host/ge/*`, `tow2_ge.{hpp,cpp}`) into
+  tow-2 and wired `sceGe_user` / `sceDisplay` to it. Display lists now execute
+  for real: clears, points/lines/triangles, texture decode and EDRAM writes.
+  `sceGeSetCallback` is captured and its signal callback (guest `0x08ABA63C`)
+  fires after list syncs.
+- **The old scene probe was destructive.** `0x08814628` is the cQuestManager
+  scene *teardown*: it dynamic-casts `[manager+0x3BF4]`, calls the scene
+  vtable `+4` destructor and clears `+0x3BF0/+0x3BF4`. The companion
+  `0x08814AEC` only writes manager fields, and the probe wrote the manager
+  pointer itself into `+0x3BF4`. Any run with `PSPRECOMP_TOW2_SCENE_START` /
+  `PSPRECOMP_TOW2_SCENE_REG` therefore renders a white screen with no scene.
+- **Plain boot reaches and renders the title screen.** Timeline
+  (`PSPRECOMP_TOW2_FRAME_DIAG`):
+  - frames 0..~2500: opening movie (PSMF), 32-bit buffers at
+    `0x04088000` / `0x04110000`;
+  - ~3000: title scene starts, RGB565 at `0x04000000` / `0x04044000`;
+  - ~3500..5000: full title screen, logo, "PRESS START BUTTON", world-tree
+    background with animated birds and copyright line.
+  Captured frame: `seq-4000.ppm` / `.png` (480x272).
+- Remaining stall: the title's main loop calls `sceKernelSleepThreadCB` from
+  `0x08A70420` and is never woken. Without `PSPRECOMP_TOW2_SLEEP_CB_NOW=1` the
+  title renders exactly one frame (the pale fade-in frame) and freezes. With
+  the diagnostic that turns the sleep into a 1 ms delay, the title animates for
+  ~2500 frames, then fades to white (next scene/attract transition).
+- The 5-sprite container at `0x08DA4460` (+576, stride 128, vtable
+  `0x08C44078`) is the **spore particle player**, not the title background.
+  Its draw hook `0x08A5FD30` bails when the sprite texture slot `+68` is zero;
+  the slot is the object resolved from `TitleArchive/spore.eai` by `0x0881E5CC`.
+- `0x0881B21C` is the title background constructor (layer_01/02, bird + eai,
+  sky, water_01/02 + eai, cloud_01/02). It is the object that draws the visible
+  title art.
+
 ## Title scene ordering (2026-11-17)
 Goal: start the title mount before `user_main` resumes, then observe
 `TitleArchive/...` requests.

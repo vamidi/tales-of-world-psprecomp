@@ -2,6 +2,7 @@
 
 #include "tow2_atrac.hpp"
 #include "tow2_ezbind.hpp"
+#include "tow2_ge.hpp"
 #include "tow2_mpeg.hpp"
 #include "tow2_window.hpp"
 
@@ -966,6 +967,129 @@ void title_state2_thread_entry(psprecomp::Runtime &runtime,
 
 
 
+// GE finish callback registered through sceGeSetCallback. The guest render
+// loop arms one and then sleeps waiting for the signal, so a sync must invoke
+// it or the first title frame is also the last.
+std::uint32_t g_ge_callback_func = 0u;
+std::uint32_t g_ge_callback_arg = 0u;
+bool g_ge_callback_running = false;
+std::uint64_t g_ge_callback_calls = 0u;
+
+void fire_ge_callback(psprecomp::Runtime &runtime,
+                      psprecomp::AllegrexContext &ctx) {
+    if (g_ge_callback_func == 0u || g_ge_callback_running) return;
+    if (!runtime.memory().contains(g_ge_callback_func, 4u)) return;
+    g_ge_callback_running = true;
+    ++g_ge_callback_calls;
+    psprecomp::AllegrexContext callback_ctx = ctx;
+    callback_ctx.set_gpr(4, 0u);
+    callback_ctx.set_gpr(5, g_ge_callback_arg);
+    callback_ctx.set_gpr(29, ctx.gpr[29] - 0x400u);
+    const bool ok = run_isolated_aot(runtime, callback_ctx, g_ge_callback_func,
+                                     kIsolatedReturnSentinel, 20000,
+                                     "ge-callback");
+    if (g_ge_callback_calls <= 8u || !ok) {
+        std::cerr << "[tow2-ge-cb] call=" << g_ge_callback_calls
+                  << " ok=" << (ok ? 1 : 0)
+                  << " func=" << psprecomp::hex32(g_ge_callback_func)
+                  << " arg=" << psprecomp::hex32(g_ge_callback_arg)
+                  << " pc=" << psprecomp::hex32(callback_ctx.pc) << "\n";
+    }
+    g_ge_callback_running = false;
+}
+
+// Walks the GE display list a guest enqueues and reports what it contains.
+// Nothing is rasterized: this only measures whether the title screen actually
+// submits work, and which command subset a renderer would have to implement.
+void dump_tow2_ge_list(psprecomp::Runtime &rt, std::uint32_t address,
+                       std::uint32_t stall, std::uint32_t callback,
+                       const char *kind) {
+    static std::uint32_t dumped = 0u;
+    static std::uint32_t prim_lists = 0u;
+    static std::uint64_t total_lists = 0u;
+    static std::uint64_t total_words = 0u;
+    static std::uint64_t total_prims = 0u;
+    ++total_lists;
+    if (address == 0u) return;
+    if (std::getenv("PSPRECOMP_TOW2_GE_DUMP") == nullptr && total_lists != 1u) {
+        return;
+    }
+
+    std::array<std::uint32_t, 1024> words{};
+    std::uint32_t count = 0u;
+    std::uint32_t prims = 0u;
+    bool terminated = false;
+    for (; count < words.size(); ++count) {
+        const std::uint32_t at = address + count * 4u;
+        if (!rt.memory().contains(at, 4u)) break;
+        words[count] = rt.memory().load32(at);
+        const std::uint32_t opcode = words[count] >> 24u;
+        if (opcode == 0x04u) ++prims;
+        if (opcode == 0x0Bu || opcode == 0x0Cu || opcode == 0x0Fu) {
+            ++count;
+            terminated = true;
+            break;
+        }
+    }
+    total_words += count;
+    total_prims += prims;
+
+    if (std::getenv("PSPRECOMP_TOW2_GE_DUMP") == nullptr) {
+        std::cerr << "[tow2-gelist] first " << kind
+                  << " list=" << psprecomp::hex32(address)
+                  << " words=" << count << " prims=" << prims
+                  << " term=" << (terminated ? "yes" : "no") << "\n";
+        return;
+    }
+    if (dumped >= 24u) {
+        if (total_lists % 5000u == 0u) {
+            std::cerr << "[tow2-gelist] totals lists=" << total_lists
+                      << " words=" << total_words
+                      << " prims=" << total_prims << "\n";
+        }
+        return;
+    }
+    ++dumped;
+
+    std::array<std::uint32_t, 256> histogram{};
+    for (std::uint32_t index = 0u; index < count; ++index) {
+        ++histogram[words[index] >> 24u];
+    }
+    std::cerr << "[tow2-gelist] " << kind
+              << " list=" << psprecomp::hex32(address)
+              << " stall=" << psprecomp::hex32(stall)
+              << " cb=" << psprecomp::hex32(callback)
+              << " words=" << count << " prims=" << prims
+              << " term=" << (terminated ? "yes" : "no") << "\n";
+
+    if (prims == 0u || prim_lists >= 6u) return;
+    ++prim_lists;
+    const std::uint32_t shown = std::min(count, 64u);
+    for (std::uint32_t index = 0u; index < shown; ++index) {
+        const std::uint32_t word = words[index];
+        const std::uint32_t opcode = word >> 24u;
+        const std::uint32_t argument = word & 0x00FFFFFFu;
+        std::cerr << "[tow2-gelist]   +" << index * 4u << " "
+                  << psprecomp::hex32(word) << " op=" << opcode
+                  << " arg=" << psprecomp::hex32(argument);
+        if (opcode == 0x04u) {
+            std::cerr << " prim_type=" << (argument & 7u)
+                      << " prim_count=" << (argument >> 16u);
+        }
+        std::cerr << "\n";
+    }
+    if (count > shown) {
+        std::cerr << "[tow2-gelist]   ... " << (count - shown)
+                  << " more words\n";
+    }
+    std::cerr << "[tow2-gelist]   ops:";
+    for (std::uint32_t opcode = 0u; opcode < histogram.size(); ++opcode) {
+        if (histogram[opcode] == 0u) continue;
+        std::cerr << " " << opcode << "x" << histogram[opcode];
+    }
+    std::cerr << "\n";
+}
+
 void ge_draw_stub(psprecomp::Runtime &, psprecomp::AllegrexContext &ctx) {
     static bool logged = false;
     if (!logged) {
@@ -1460,8 +1584,10 @@ void delete_thread(psprecomp::Runtime &runtime, psprecomp::AllegrexContext &ctx)
                       << psprecomp::hex32(title_object) << "\n";
         }
         if (title_object != 0u) {
-            runtime.register_function(0x08A76ED8u, &ge_draw_stub,
-                                      "tow2_ge_draw_stub_trigger");
+            if (std::getenv("PSPRECOMP_TOW2_GE_DRAW_STUB") != nullptr) {
+                runtime.register_function(0x08A76ED8u, &ge_draw_stub,
+                                          "tow2_ge_draw_stub_trigger");
+            }
             if (runtime.memory().contains(0x08D030D0u, 0x34u)) {
                 const std::uint32_t scratch =
                     (g_partitions.next_address + 0xFFu) & ~0xFFu;
@@ -2027,6 +2153,15 @@ void sleep_thread(psprecomp::Runtime &runtime, psprecomp::AllegrexContext &ctx) 
         ctx.set_gpr(2, 0x80020198u);
         return;
     }
+    static std::uint64_t sleeps = 0u;
+    ++sleeps;
+    if (std::getenv("PSPRECOMP_TOW2_SCHED_DIAG") != nullptr &&
+        g_scheduler.current_uid == 1 && sleeps < 400u) {
+        std::cerr << "[tow2-sched] sleep uid=" << g_scheduler.current_uid
+                  << " name=\"" << current->second.name << "\""
+                  << " ra=" << psprecomp::hex32(ctx.gpr[31])
+                  << " total=" << sleeps << "\n";
+    }
     current->second.state = ThreadState::Sleeping;
     psprecomp::AllegrexContext suspended = ctx;
     suspended.set_gpr(2, 0u);
@@ -2048,6 +2183,15 @@ void wakeup_thread(psprecomp::Runtime &, psprecomp::AllegrexContext &ctx) {
     if (thread->second.state != ThreadState::Sleeping) {
         ctx.set_gpr(2, 0x800201A2u);
         return;
+    }
+    static std::uint64_t wakeups = 0u;
+    ++wakeups;
+    if (std::getenv("PSPRECOMP_TOW2_SCHED_DIAG") != nullptr &&
+        uid == 1 && wakeups < 400u) {
+        std::cerr << "[tow2-sched] wakeup uid=" << uid
+                  << " name=\"" << thread->second.name << "\""
+                  << " ra=" << psprecomp::hex32(ctx.gpr[31])
+                  << " total=" << wakeups << "\n";
     }
     psprecomp::AllegrexContext context = thread->second.context;
     context.set_gpr(2, 0u);
@@ -3712,8 +3856,10 @@ void register_hle(psprecomp::Runtime &runtime, std::uint32_t user_arena_start) {
         runtime.register_function(kTitleState2Thread,
                                   &title_state2_thread_entry,
                                   "tow2_title_state2_thread");
-        runtime.register_function(0x08A76ED8u, &ge_draw_stub,
-                                  "tow2_ge_draw_stub");
+        if (std::getenv("PSPRECOMP_TOW2_GE_DRAW_STUB") != nullptr) {
+            runtime.register_function(0x08A76ED8u, &ge_draw_stub,
+                                      "tow2_ge_draw_stub");
+        }
     }
     g_partitions = PartitionTable{};
     g_partitions.next_address = (user_arena_start + 0xFFu) & ~0xFFu;
@@ -4589,17 +4735,50 @@ void register_hle(psprecomp::Runtime &runtime, std::uint32_t user_arena_start) {
             ctx.set_gpr(2, 0x00200000u);
         });
     runtime.register_hle("sceGe_user", 0xAB49E76Au, // sceGeListEnQueue
-        [](psprecomp::Runtime &, psprecomp::AllegrexContext &ctx) { ctx.set_gpr(2, 1u); });
+        [](psprecomp::Runtime &rt, psprecomp::AllegrexContext &ctx) {
+            dump_tow2_ge_list(rt, ctx.gpr[4], ctx.gpr[5], ctx.gpr[6],
+                              "enqueue");
+            ctx.set_gpr(2, tow2::ge_enqueue(rt, ctx.gpr[4], ctx.gpr[5],
+                                            ctx.gpr[6]));
+        });
     runtime.register_hle("sceGe_user", 0x1C0D95A6u, // sceGeListEnQueueHead
-        [](psprecomp::Runtime &, psprecomp::AllegrexContext &ctx) { ctx.set_gpr(2, 1u); });
+        [](psprecomp::Runtime &rt, psprecomp::AllegrexContext &ctx) {
+            dump_tow2_ge_list(rt, ctx.gpr[4], ctx.gpr[5], ctx.gpr[6],
+                              "enqueue-head");
+            ctx.set_gpr(2, tow2::ge_enqueue_head(rt, ctx.gpr[4], ctx.gpr[5],
+                                                 ctx.gpr[6]));
+        });
     runtime.register_hle("sceGe_user", 0x03444EB4u, // sceGeListSync
-        [](psprecomp::Runtime &, psprecomp::AllegrexContext &ctx) { ctx.set_gpr(2, 0u); });
+        [](psprecomp::Runtime &rt, psprecomp::AllegrexContext &ctx) {
+            tow2::ge_sync(rt, ctx.gpr[4]);
+            fire_ge_callback(rt, ctx);
+            ctx.set_gpr(2, 0u);
+        });
     runtime.register_hle("sceGe_user", 0xB287BD61u, // sceGeDrawSync
-        [](psprecomp::Runtime &, psprecomp::AllegrexContext &ctx) { ctx.set_gpr(2, 0u); });
+        [](psprecomp::Runtime &rt, psprecomp::AllegrexContext &ctx) {
+            tow2::ge_draw_sync(rt);
+            fire_ge_callback(rt, ctx);
+            ctx.set_gpr(2, 0u);
+        });
     runtime.register_hle("sceGe_user", 0xE0D68148u, // sceGeListUpdateStallAddr
-        [](psprecomp::Runtime &, psprecomp::AllegrexContext &ctx) { ctx.set_gpr(2, 0u); });
+        [](psprecomp::Runtime &, psprecomp::AllegrexContext &ctx) {
+            tow2::ge_update_stall(ctx.gpr[4], ctx.gpr[5]);
+            ctx.set_gpr(2, 0u);
+        });
     runtime.register_hle("sceGe_user", 0xA4FC06A4u, // sceGeSetCallback
-        [](psprecomp::Runtime &, psprecomp::AllegrexContext &ctx) { ctx.set_gpr(2, 0u); });
+        [](psprecomp::Runtime &rt, psprecomp::AllegrexContext &ctx) {
+            const std::uint32_t descriptor = ctx.gpr[4];
+            auto &memory = rt.memory();
+            if (descriptor != 0u && memory.contains(descriptor, 8u)) {
+                g_ge_callback_func = memory.load32(descriptor);
+                g_ge_callback_arg = memory.load32(descriptor + 4u);
+            }
+            std::cerr << "[tow2-ge-cb] set func="
+                      << psprecomp::hex32(g_ge_callback_func)
+                      << " arg=" << psprecomp::hex32(g_ge_callback_arg)
+                      << "\n";
+            ctx.set_gpr(2, 0u);
+        });
     runtime.register_hle("sceGe_user", 0x05DB22CEu, // sceGeUnsetCallback
         [](psprecomp::Runtime &, psprecomp::AllegrexContext &ctx) { ctx.set_gpr(2, 0u); });
     runtime.register_hle("sceGe_user", 0xB448EC0Du, // sceGeBreak
@@ -4619,8 +4798,84 @@ void register_hle(psprecomp::Runtime &runtime, std::uint32_t user_arena_start) {
             g_framebuffer = ctx.gpr[4];
             g_framebuffer_stride = ctx.gpr[5];
             g_framebuffer_format = ctx.gpr[6];
-            window_present(rt.memory(), g_framebuffer, g_framebuffer_stride,
-                           g_framebuffer_format);
+            static std::uint64_t presents = 0u;
+            ++presents;
+            if (std::getenv("PSPRECOMP_TOW2_PRESENT_DIAG") != nullptr &&
+                (presents <= 3u || presents % 240u == 0u)) {
+                auto &memory = rt.memory();
+                static std::uint32_t container = 0u;
+                if (container == 0u) {
+                    for (std::uint32_t address = 0x08800000u;
+                         address < 0x0A000000u; address += 4u) {
+                        if (!memory.contains(address, 4u)) break;
+                        if (memory.load32(address) == 0x08C44B08u) {
+                            container = address;
+                            break;
+                        }
+                    }
+                    std::cerr << "[tow2-sprite] container="
+                              << psprecomp::hex32(container) << "\n";
+                }
+                if (container != 0u &&
+                    memory.contains(container + 576u, 5u * 128u)) {
+                    std::cerr << "[tow2-sprite] container state +1228="
+                              << memory.load32(container + 1228u)
+                              << " +1232="
+                              << static_cast<unsigned>(
+                                     memory.load8(container + 1232u))
+                              << " +1233="
+                              << static_cast<unsigned>(
+                                     memory.load8(container + 1233u))
+                              << "\n";
+                    for (std::uint32_t index = 0u; index < 5u; ++index) {
+                        const std::uint32_t sprite = container + 576u +
+                                                     index * 128u;
+                        std::cerr << "[tow2-sprite] #" << index
+                                  << " vtable="
+                                  << psprecomp::hex32(memory.load32(sprite))
+                                  << " +16="
+                                  << psprecomp::hex32(memory.load32(sprite + 16u))
+                                  << " +20="
+                                  << psprecomp::hex32(memory.load32(sprite + 20u))
+                                  << " +64="
+                                  << psprecomp::hex32(memory.load32(sprite + 64u))
+                                  << " +68="
+                                  << psprecomp::hex32(memory.load32(sprite + 68u))
+                                  << " +72="
+                                  << psprecomp::hex32(memory.load32(sprite + 72u))
+                                  << "\n";
+                    }
+                }
+                const std::uint32_t draw_ctx =
+                    memory.contains(0x08D03100u, 4u)
+                        ? memory.load32(0x08D03100u) : 0u;
+                const std::uint32_t draw_arg =
+                    memory.contains(0x08D03194u, 4u)
+                        ? memory.load32(0x08D03194u) : 0u;
+                const std::uint32_t scene =
+                    memory.contains(0x08D9B920u, 8u)
+                        ? memory.load32(0x08D9B920u) : 0u;
+                const std::uint32_t scene_id =
+                    scene != 0u && memory.contains(scene + 4u, 4u)
+                        ? memory.load32(scene + 4u) : 0u;
+                std::cerr << "[tow2-present] n=" << presents
+                          << " fb=" << psprecomp::hex32(g_framebuffer)
+                          << " scene=" << psprecomp::hex32(scene)
+                          << " id=" << scene_id
+                          << " draw_ctx=" << psprecomp::hex32(draw_ctx)
+                          << " draw_arg=" << psprecomp::hex32(draw_arg);
+                if (draw_ctx != 0u && memory.contains(draw_ctx, 64u)) {
+                    std::cerr << " ctx:";
+                    for (std::uint32_t word = 0u; word < 8u; ++word) {
+                        std::cerr << " "
+                                  << psprecomp::hex32(
+                                         memory.load32(draw_ctx + word * 4u));
+                    }
+                }
+                std::cerr << "\n";
+            }
+            tow2::ge_set_framebuffer(rt, g_framebuffer, g_framebuffer_stride,
+                                     g_framebuffer_format);
             ctx.set_gpr(2, 0u);
         });
     runtime.register_hle("sceDisplay", 0x36CDFADEu, // sceDisplayWaitVblankStart
