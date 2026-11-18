@@ -580,6 +580,27 @@ The source object returns from `find` but has no archive index of its own;
 the next step is to back it with the host `EzbindArchive` (serve entry
 bytes/decompression) instead of relying on the guest parser.
 
+### title.arc is loaded via raw UMD sectors (2026-11-18)
+
+The “title.arc is not loaded” symptom was an I/O-visibility artifact.
+
+- ISO scan: `title.arc` starts at **127,172,608** (sector **62096**).
+- Native log at boot:
+  ```
+  [tow2][archive] raw device load start=127172608 bytes=1370112
+                  buf=0x09BF8780 head="EZBIND"
+  ```
+  669 sectors = 1,370,112 bytes (>= 1,369,296), starting exactly at the
+  archive offset, and the buffer begins with `EZBIND`.
+- The engine reads archives through the raw `umd1:` device via
+  `FileReadingTask` (sector-addressed `sceIoLseek`/`sceIoRead`), **not**
+  through `sceIoOpen`/`disc0:`. Watching `sceIoOpen` therefore missed it.
+- Consequence: **no custom loader function is required**. The guest already
+  reads the archive into guest RAM, and the host also parses it on VFS
+  resolve.
+- Remaining check: confirm the guest mount source references the loaded
+  buffer (`0x09BF8780`) and that entry payloads are served from it.
+
 ## Title scene ordering (2026-11-17)
 Goal: start the title mount before `user_main` resumes, then observe
 `TitleArchive/...` requests.

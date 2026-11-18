@@ -2146,8 +2146,19 @@ std::int32_t read_host_file(psprecomp::Runtime &runtime, std::int32_t fd,
         runtime.memory().copy_in(buffer, std::span<const std::uint8_t>(data.data(), got));
         handle->second.position += got;
     }
-    if (file_diag() && g_read_diag_count < 24u) {
-        ++g_read_diag_count;
+    if (device && got >= 1369296u &&
+        runtime.memory().contains(buffer, 8u)) {
+        const std::uint64_t start = handle->second.position - got;
+        char head[9] = {};
+        for (std::uint32_t i = 0; i < 8u; ++i) {
+            head[i] = static_cast<char>(runtime.memory().load8(buffer + i));
+        }
+        std::cerr << "[tow2][archive] raw device load start=" << start
+                  << " bytes=" << got << " buf="
+                  << psprecomp::hex32(buffer) << " head=\"" << head
+                  << "\"\n";
+    }
+    if (file_diag() && g_read_diag_count < 24u) {        ++g_read_diag_count;
         const auto current = g_scheduler.threads.find(g_scheduler.current_uid);
         std::cerr << "[tow2][io] read fd=" << fd << " request=" << size
                   << (device ? " sectors" : " bytes")
