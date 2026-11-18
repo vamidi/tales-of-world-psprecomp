@@ -796,6 +796,43 @@ bring-up.
   sky, water_01/02 + eai, cloud_01/02). It is the object that draws the visible
   title art.
 
+### Input path: title -> character creation (2026-11-18)
+
+- The pad is polled every frame from `0x08A7C484`
+  (`sceCtrlReadBufferPositive`, `ra=0x08A7C4A0`, buffer `0x08D04638`); the
+  title's Start edge detector `0x08A63704` reads the same buffer and tests
+  bit 3 (`0x0008`).
+- **Start at the title reaches the menu state machine.** With Start at
+  ~10 s guest time the title loop exits, the movie scene is torn down
+  (`scene_id -> 0xFFFF`) and the menu opens
+  `system/menuback.ppt`, `system/common.eai`, `common/charmake_bk.arc`.
+  The next frame is the character-creation class grid; the 15 class icons and
+  the message window render (captured at present 2500).
+- Title timing: frame 288 = 10.03 s guest time. The title becomes interactive
+  after the opening movie; with no input it times out and re-enters the intro
+  movie (`0x088206A0`) at ~frame 300. Periodic Start+Cross from boot skips the
+  opening movie and reaches the class grid at frame 300.
+- Missing imports hit immediately after the transition, now implemented:
+  - `UtilsForUser 0x27CC57F0` `sceKernelLibcTime`
+  - `UtilsForUser 0x37FB5C42` `sceKernelGetGPI`
+  - plus `0x91E4F6A7` `sceKernelLibcClock` and `0x71EC4271`
+    `sceKernelLibcGettimeofday` for parity with tow-1.
+- New diagnostics:
+  - `PSPRECOMP_TOW2_PAD_SCRIPT="t_us:mask[:hold_us],..."` deterministic pad
+    events (same syntax as tow-1's `PSPRECOMP_TOW1_PAD_SCRIPT`).
+  - `PSPRECOMP_TOW2_CTRL_DIAG=1` logs pad reads with frame, guest time,
+    button mask and return address.
+- Next stall: the class grid is static under Start, Cross, Down and analog
+  input. PPSSPP delivers the same Cross press (pad state `0x08D0463C` reads
+  `0x4000`) and its class grid does not visibly change either; the PPSSPP
+  comparison uses a Vulkan `PrintWindow` capture, so treat that visual as weak
+  evidence. This is not simply a missing button mapping. The charmake archive
+  load is a raw 2.8 MB EZBIND read (`start=301858816`, buffer `0x09A96700`);
+  its name-table layout is not title.arc's, so the existing `+0x160`
+  diagnostic prints garbage for it. Next: locate the class-grid state variable
+  (charmake UI vtable `0x08C17220`, constructor `0x08A63688`) and check
+  whether it waits on the model/text archive rather than on input.
+
 ## Title scene ordering (2026-11-17)
 Goal: start the title mount before `user_main` resumes, then observe
 `TitleArchive/...` requests.

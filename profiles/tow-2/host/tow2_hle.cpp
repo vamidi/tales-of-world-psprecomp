@@ -4089,6 +4089,34 @@ void register_hle(psprecomp::Runtime &runtime, std::uint32_t user_arena_start) {
                 ctx.set_gpr(2, 0u);
             });
     }
+    runtime.register_hle("UtilsForUser", 0x37FB5C42u, // sceKernelGetGPI
+        [](psprecomp::Runtime &, psprecomp::AllegrexContext &ctx) {
+            ctx.set_gpr(2, 0u);
+        });
+    runtime.register_hle("UtilsForUser", 0x91E4F6A7u, // sceKernelLibcClock
+        [](psprecomp::Runtime &, psprecomp::AllegrexContext &ctx) {
+            ctx.set_gpr(2, static_cast<std::uint32_t>(g_scheduler.now_us));
+        });
+    runtime.register_hle("UtilsForUser", 0x27CC57F0u, // sceKernelLibcTime
+        [](psprecomp::Runtime &rt, psprecomp::AllegrexContext &ctx) {
+            const std::uint32_t seconds =
+                static_cast<std::uint32_t>(g_scheduler.now_us / 1000000u);
+            if (ctx.gpr[4] != 0u && rt.memory().contains(ctx.gpr[4], 4u))
+                rt.memory().store32(ctx.gpr[4], seconds);
+            ctx.set_gpr(2, seconds);
+        });
+    runtime.register_hle("UtilsForUser", 0x71EC4271u, // sceKernelLibcGettimeofday
+        [](psprecomp::Runtime &rt, psprecomp::AllegrexContext &ctx) {
+            const std::uint32_t seconds =
+                static_cast<std::uint32_t>(g_scheduler.now_us / 1000000u);
+            const std::uint32_t microseconds =
+                static_cast<std::uint32_t>(g_scheduler.now_us % 1000000u);
+            if (ctx.gpr[4] != 0u && rt.memory().contains(ctx.gpr[4], 8u)) {
+                rt.memory().store32(ctx.gpr[4], seconds);
+                rt.memory().store32(ctx.gpr[4] + 4u, microseconds);
+            }
+            ctx.set_gpr(2, 0u);
+        });
 
     runtime.register_hle("SysMemUserForUser", 0x237DBD4Fu, // sceKernelAllocPartitionMemory
         [](psprecomp::Runtime &rt, psprecomp::AllegrexContext &ctx) {
@@ -5173,9 +5201,74 @@ void register_hle(psprecomp::Runtime &runtime, std::uint32_t user_arena_start) {
                 return;
             }
             std::uint32_t buttons = window_buttons();
+            // Deterministic pad script: "time_us:mask[:hold_us],...".
+            // Times and masks accept decimal or 0x-prefixed values.
+            if (const char *script_text = std::getenv("PSPRECOMP_TOW2_PAD_SCRIPT");
+                script_text != nullptr && *script_text != '\0') {
+                struct PadEvent {
+                    std::uint64_t time_us{};
+                    std::uint32_t mask{};
+                    std::uint64_t hold_us{250000u};
+                };
+                static bool loaded = false;
+                static std::vector<PadEvent> events;
+                if (!loaded) {
+                    loaded = true;
+                    const char *cursor = script_text;
+                    while (*cursor != '\0') {
+                        while (*cursor == ',' || *cursor == ' ' || *cursor == '\n')
+                            ++cursor;
+                        if (*cursor == '\0') break;
+                        char *end = nullptr;
+                        const unsigned long long time_value =
+                            std::strtoull(cursor, &end, 0);
+                        if (end == cursor) break;
+                        cursor = end;
+                        if (*cursor != ':') break;
+                        ++cursor;
+                        const unsigned long long mask_value =
+                            std::strtoull(cursor, &end, 0);
+                        if (end == cursor) break;
+                        cursor = end;
+                        PadEvent event;
+                        event.time_us = time_value;
+                        event.mask = static_cast<std::uint32_t>(mask_value);
+                        if (*cursor == ':') {
+                            ++cursor;
+                            const unsigned long long hold_value =
+                                std::strtoull(cursor, &end, 0);
+                            if (end != cursor && hold_value != 0u)
+                                event.hold_us = hold_value;
+                            cursor = end;
+                        }
+                        events.push_back(event);
+                        while (*cursor != '\0' && *cursor != ',') ++cursor;
+                    }
+                }
+                for (const PadEvent &event : events) {
+                    if (g_scheduler.now_us >= event.time_us &&
+                        g_scheduler.now_us < event.time_us + event.hold_us)
+                        buttons |= event.mask;
+                }
+            }
             if (std::getenv("PSPRECOMP_TOW2_PRESS_START") != nullptr) {
                 // Press Start+Cross for 250 ms every 2 s of guest time.
                 if ((g_scheduler.now_us % 2000000u) < 250000u) buttons |= 0x4008u;
+            }
+            if (std::getenv("PSPRECOMP_TOW2_CTRL_DIAG") != nullptr) {
+                static std::uint64_t reads = 0u;
+                ++reads;
+                if (reads <= 16u || reads % 600u == 0u || buttons != 0u) {
+                    static std::uint64_t logged = 0u;
+                    if (logged++ < 240u) {
+                        std::cerr << "[tow2-ctrl] reads=" << reads
+                                  << " frame=" << g_present_count
+                                  << " t_us=" << g_scheduler.now_us
+                                  << " buttons=" << psprecomp::hex32(buttons)
+                                  << " ra=" << psprecomp::hex32(ctx.gpr[31])
+                                  << "\n";
+                    }
+                }
             }
             for (std::uint32_t index = 0; index < count; ++index) {
                 const std::uint32_t at = buffer + index * 16u;
