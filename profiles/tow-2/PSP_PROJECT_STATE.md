@@ -689,24 +689,64 @@ serving the title archive.
   presented frames (the earlier `PSPRECOMP_TOW2_SLEEP_CB_NOW` hack is no
   longer needed).
 
-### Title idle -> white transition (2026-11-18)
+### Title idle -> intro replay: the cSoundMusic gate (2026-11-18)
 
-- After ~5,000 presented frames the title fades to white and the quest manager
-  is torn down: at stop the manager has `scene_impl=0x00000000`,
-  `scene_id=0xFFFF` (the same empty state a fresh boot starts in).
-- No file open happens after the title loads, and `sceMpegAvcDecode` stops at
-  the end of the opening movie (last decode at `frame=1511`). The attract
-  replay never asks the decoder for another frame.
-- So the white screen is the post-teardown attract transition with **no new
-  scene and no movie**: the frame loop only clears. The idle title -> intro
-  movie replay seen on hardware needs the next scene/movie request, which is
-  never issued in the port.
-- The same run with the title trigger set
-  (`TITLE_TRIGGER` + `TITLE_MOUNT_THREAD` + `HOLD_USER_MAIN`) produces the
-  identical timeline (11,983 presents, title then white). In that
-  configuration `user_main` is held at `0x08A63398` and the probe's mount
-  thread (uid 10) runs; the intro movie still does **not** replay
-  (`sceMpegCreate`/`Init` run exactly once, with no delete/finish).
+The boot flow is a loop (`0x0881C8E4`):
+
+```
+do {
+    movie scene (0x088206A0 -> title/title.pmf + pump)
+    fade
+    iVar1 = title scene (0x08818598)
+} while (iVar1 == 1);
+```
+
+The title scene returns 1 on its idle timeout, which makes the loop replay the
+intro movie — this is the idle-triggered replay.
+
+The title's exit path ends with:
+
+```
+while (0x08A4AE08([0x08D14F10]) != 0) pump(0x08A6C3D8);
+```
+
+- `[0x08D14F10]` is the sound manager; `+0x208` is an embedded **cSoundMusic**
+  (constructor `0x08A6E7D8` installs the `"cSoundMusic"` name).
+- `0x08A4AE08` calls `0x08A6FC9C`: `([obj+0x24] ^ [obj+0x28]) != 0`, i.e.
+  current state vs target state.
+- Trace during the white screen:
+  `manager=0x08D51A70 state=0x8000 target=0x00000000`, unchanged for 1000+
+  frames; the title object polls the same pair every frame
+  (`ra=0x0881C6FC`).
+- The audio backend is silent/stubbed, so the guest music task can never
+  finish the requested stop: the title scene never returns 1, the boot loop
+  never re-enters the movie, and the screen stays on the white fade.
+
+Retiring the task (state -> target when `state==0x8000`, `target==0`):
+
+- only two retirements occur, at frames 4166 and 8330;
+- the intro movie replays: `sceMpegCreate` count 1 -> 3, `sceMpegAvcDecode`
+  resumes at `frame=9836`, 32-bit movie presentations return at ~6000 and
+  ~11000;
+- captured frames show the cloud movie (6000) and the title again (9000).
+
+The port now retires that music task by default so the idle replay works on a
+silent backend; `PSPRECOMP_TOW2_SOUND_WAIT=1` restores the true wait for audio
+bring-up.
+
+### Title idle -> white transition (historical note, 2026-11-18)
+
+- Before the sound gate was understood, the post-title screen looked like a
+  scene teardown: at stop the quest manager had `scene_impl=0x00000000`,
+  `scene_id=0xFFFF`, no file opens and no further MPEG decodes.
+- That is the *wait* symptom, not a quest transition: the title's exit is
+  blocked inside the `cSoundMusic` drain loop described above.
+- The title-trigger configuration
+  (`TITLE_TRIGGER` + `TITLE_MOUNT_THREAD` + `HOLD_USER_MAIN`) showed the same
+  pre-fix timeline (11,983 presents, title then white). In that configuration
+  `user_main` is held at `0x08A63398` and the probe's mount thread (uid 10)
+  runs. It was measured before the sound gate was retired and has not been
+  re-measured since.
 
 ### GE renderer ported; title screen renders (2026-11-18)
 

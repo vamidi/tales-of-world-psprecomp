@@ -494,6 +494,53 @@ void scene_caller_hook(psprecomp::Runtime &runtime,
                        psprecomp::AllegrexContext &ctx,
                        std::uint32_t dispatch_pc,
                        std::int32_t thread_uid) {
+    static const bool scene_trace =
+        std::getenv("PSPRECOMP_TOW2_SCENE_TRACE") != nullptr;
+    if (scene_trace) {
+        const bool interesting =
+            dispatch_pc == 0x088206A0u ||   // movie scene entry
+            dispatch_pc == 0x08A487D0u ||   // start movie (manager, path)
+            dispatch_pc == 0x08814AECu ||   // install quest/scene fields
+            dispatch_pc == 0x08814628u ||   // tear down quest/scene
+            dispatch_pc == 0x08AC1308u ||   // get movie manager
+            dispatch_pc == 0x08AC1350u ||   // get pump object
+            dispatch_pc == 0x08A4AE08u;     // title drain: queue busy check
+        if (dispatch_pc == 0x08A4AE08u) {
+            static std::uint64_t checks = 0u;
+            ++checks;
+            if (checks % 2000u == 0u) {
+                const std::uint32_t manager = ctx.gpr[4];
+                const std::uint32_t queue = manager + 520u;
+                std::uint32_t head = 0u;
+                std::uint32_t tail = 0u;
+                if (runtime.memory().contains(queue + 0x24u, 8u)) {
+                    head = runtime.memory().load32(queue + 0x24u);
+                    tail = runtime.memory().load32(queue + 0x28u);
+                }
+                std::cerr << "[tow2-scene-trace] drain checks=" << checks
+                          << " frame=" << g_present_count
+                          << " manager=" << psprecomp::hex32(manager)
+                          << " head=" << psprecomp::hex32(head)
+                          << " tail=" << psprecomp::hex32(tail)
+                          << " pending=" << (head != tail ? 1 : 0) << "\n";
+            }
+        }
+        if (interesting) {
+            static std::uint32_t traces = 0u;
+            if (traces++ < 400u) {
+                std::cerr << "[tow2-scene-trace] pc="
+                          << psprecomp::hex32(dispatch_pc)
+                          << " frame=" << g_present_count
+                          << " uid=" << thread_uid
+                          << " ra=" << psprecomp::hex32(ctx.gpr[31])
+                          << " a0=" << psprecomp::hex32(ctx.gpr[4])
+                          << " a1=" << psprecomp::hex32(ctx.gpr[5])
+                          << " a2=" << psprecomp::hex32(ctx.gpr[6])
+                          << " a3=" << psprecomp::hex32(ctx.gpr[7])
+                          << "\n";
+            }
+        }
+    }
     if (dispatch_pc == 0x08A5FDBCu) {
         static bool logged = false;
         if (!logged) {
@@ -3655,6 +3702,23 @@ void report_threads() {
         }
         std::cerr << "\n";
     }
+    if (g_mpeg_memory != nullptr && g_mpeg_memory->contains(0x08D14F10u, 16u)) {
+        const std::uint32_t manager = g_mpeg_memory->load32(0x08D14F10u);
+        const std::uint32_t pump = g_mpeg_memory->load32(0x08D14F14u);
+        const std::uint32_t fade = g_mpeg_memory->load32(0x08D14F18u);
+        std::cerr << "[tow2] managers queue=" << psprecomp::hex32(manager)
+                  << " pump=" << psprecomp::hex32(pump)
+                  << " fade=" << psprecomp::hex32(fade);
+        if (manager != 0u &&
+            g_mpeg_memory->contains(manager + 520u, 0x30u)) {
+            const std::uint32_t queue = manager + 520u;
+            std::cerr << " queue_head="
+                      << psprecomp::hex32(g_mpeg_memory->load32(queue + 0x24u))
+                      << " queue_tail="
+                      << psprecomp::hex32(g_mpeg_memory->load32(queue + 0x28u));
+        }
+        std::cerr << "\n";
+    }
     std::cerr << "[tow2] callbacks:";
     if (g_callbacks.empty()) {
         std::cerr << " none";
@@ -3936,7 +4000,8 @@ void register_overrides(psprecomp::Runtime &runtime) {
 
 void register_hle(psprecomp::Runtime &runtime, std::uint32_t user_arena_start) {
     g_mpeg_memory = &runtime.memory();
-    if (std::getenv("PSPRECOMP_TOW2_SCENE_WATCH") != nullptr) {
+    if (std::getenv("PSPRECOMP_TOW2_SCENE_WATCH") != nullptr ||
+        std::getenv("PSPRECOMP_TOW2_SCENE_TRACE") != nullptr) {
         psprecomp::set_runtime_pre_dispatch_hook(&scene_caller_hook);
         psprecomp::set_runtime_post_dispatch_hook(&scene_watch_hook);
     }
@@ -4910,6 +4975,34 @@ void register_hle(psprecomp::Runtime &runtime, std::uint32_t user_arena_start) {
             static std::uint64_t presents = 0u;
             ++presents;
             ++g_present_count;
+            // The audio backend does not run the guest cSoundMusic mixer, so
+            // the embedded music task at [0x08D14F10]+0x208 stays in state
+            // 0x8000 with a requested target of 0. The title's exit path waits
+            // for that transition before the boot loop can replay the intro
+            // movie, so a silent port must retire the task. Only the exact
+            // running->idle pair is cleared; PSPRECOMP_TOW2_SOUND_WAIT=1 keeps
+            // the true wait for audio bring-up.
+            if (std::getenv("PSPRECOMP_TOW2_SOUND_WAIT") == nullptr) {
+                auto &memory = rt.memory();
+                if (memory.contains(0x08D14F10u, 4u)) {
+                    const std::uint32_t manager = memory.load32(0x08D14F10u);
+                    const std::uint32_t sound = manager + 520u;
+                    if (manager != 0u && memory.contains(sound + 0x28u, 4u)) {
+                        const std::uint32_t state = memory.load32(sound + 0x24u);
+                        const std::uint32_t target = memory.load32(sound + 0x28u);
+                        if (state == 0x00008000u && target == 0u) {
+                            memory.store32(sound + 0x24u, 0u);
+                            static std::uint32_t retired = 0u;
+                            if (retired++ < 8u) {
+                                std::cerr << "[tow2-sound] retired music task"
+                                          << " frame=" << g_present_count
+                                          << " manager="
+                                          << psprecomp::hex32(manager) << "\n";
+                            }
+                        }
+                    }
+                }
+            }
             if (std::getenv("PSPRECOMP_TOW2_PRESENT_DIAG") != nullptr &&
                 (presents <= 3u || presents % 240u == 0u)) {
                 auto &memory = rt.memory();
