@@ -666,6 +666,20 @@ raw UMD read (title.arc -> 0x09BF8780)
 No custom loader or parser override is required; the port is end-to-end
 serving the title archive.
 
+### Port status poster (2026-11-18)
+
+`profiles/tow-2/scripts/make_port_status_image.py` renders
+`profiles/tow-2/PORT_STATUS.png` from `analysis/tow2_report.json` plus the
+on-disk corpus:
+
+- AOT: **38,213 seeds**, **38,123 generated (99.76%)**, 90 analyzer-truncated
+- imports: **416 across 144 libraries** — 32 SDK libraries (284 imports) and
+  112 game modules (132 imports, character/asset entries aggregated)
+- corpus: 567 AOT units, 99.93 MB; 213,047 relocations
+- gates: 5/9 — boot, intro movie, title archive mount, title render and
+  idle→intro replay verified; input/menus, character creation, field and
+  battle pending
+
 ### SleepThreadCB wakeup: vblank-paced pump resume (2026-11-18)
 
 - The module/quest pump `0x08A6C3D8` either waits on `SleepSema`
