@@ -666,6 +666,42 @@ raw UMD read (title.arc -> 0x09BF8780)
 No custom loader or parser override is required; the port is end-to-end
 serving the title archive.
 
+### SleepThreadCB wakeup: vblank-paced pump resume (2026-11-18)
+
+- The module/quest pump `0x08A6C3D8` either waits on `SleepSema`
+  (`ra=0x08A70524`, empty queue) or signals `SleepSema` and calls
+  `sceKernelSleepThreadCB` (`ra=0x08A70420`, non-empty queue).
+- A full-boot semaphore trace shows only two participants: `wait` by
+  `user_main` (uid 1) and `signal` by `ModuleDispatcher` (uid 8). No
+  `sceKernelWakeupThread` call ever targets uid 1 (372 wakeups, all uid 8),
+  and `SleepSema` ends with `value=1 waiters=0` — the phase-1 signal is
+  never consumed.
+- The EBOOT imports **no** alarm / sub-interrupt / vblank-handler API: the
+  registry has only `sceDisplayWaitVblank*`, `sceGeSetCallback`, power and UMD
+  callbacks; there is no `sceKernelSetAlarm` or
+  `sceKernelRegisterSubIntrHandler`. The only remaining frame-paced source is
+  the vblank tick.
+- Implemented: `sceKernelSleepThreadCB` called from `0x08A70420` (the pump
+  yield) delays one vblank (16683 us) instead of sleeping indefinitely; every
+  other `SleepThreadCB` caller keeps true indefinite-sleep semantics.
+  `PSPRECOMP_TOW2_SLEEP_CB_INFINITE=1` restores the old behaviour.
+- Result: plain boot now runs the title with no diagnostic env — 11,983
+  presented frames (the earlier `PSPRECOMP_TOW2_SLEEP_CB_NOW` hack is no
+  longer needed).
+
+### Title idle -> white transition (2026-11-18)
+
+- After ~5,000 presented frames the title fades to white and the quest manager
+  is torn down: at stop the manager has `scene_impl=0x00000000`,
+  `scene_id=0xFFFF` (the same empty state a fresh boot starts in).
+- No file open happens after the title loads, and `sceMpegAvcDecode` stops at
+  the end of the opening movie (last decode at `frame=1511`). The attract
+  replay never asks the decoder for another frame.
+- So the white screen is the post-teardown attract transition with **no new
+  scene and no movie**: the frame loop only clears. The idle title -> intro
+  movie replay seen on hardware needs the next scene/movie request, which is
+  never issued in the port.
+
 ### GE renderer ported; title screen renders (2026-11-18)
 
 - Ported tow-1's software GE stack (`host/ge/*`, `tow2_ge.{hpp,cpp}`) into

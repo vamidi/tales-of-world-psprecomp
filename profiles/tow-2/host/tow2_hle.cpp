@@ -480,6 +480,7 @@ std::uint32_t g_state_prev_pc = 0u;
 // sector-addressed UMD read.
 std::uint32_t g_title_arc_buffer = 0u;
 std::uint32_t g_title_arc_bytes = 0u;
+std::uint64_t g_present_count = 0u;
 
 constexpr std::uint32_t kIsolatedReturnSentinel = 0xDEADBEEFu;
 void inspect_ezbind_archive(const std::filesystem::path &host_path,
@@ -526,7 +527,8 @@ void scene_caller_hook(psprecomp::Runtime &runtime,
         }
         std::cerr << "[tow2-open] path=\"" << path << "\" ra="
                   << psprecomp::hex32(ctx.gpr[31])
-                  << " uid=" << thread_uid << "\n";
+                  << " uid=" << thread_uid
+                  << " frame=" << g_present_count << "\n";
         if (path.rfind("TitleArchive/", 0) == 0) {
             static bool dumped = false;
             if (!dumped) {
@@ -2187,10 +2189,11 @@ void wakeup_thread(psprecomp::Runtime &, psprecomp::AllegrexContext &ctx) {
     static std::uint64_t wakeups = 0u;
     ++wakeups;
     if (std::getenv("PSPRECOMP_TOW2_SCHED_DIAG") != nullptr &&
-        uid == 1 && wakeups < 400u) {
+        wakeups < 400u) {
         std::cerr << "[tow2-sched] wakeup uid=" << uid
                   << " name=\"" << thread->second.name << "\""
                   << " ra=" << psprecomp::hex32(ctx.gpr[31])
+                  << " stub=" << psprecomp::hex32(psprecomp::runtime_dispatch_pc())
                   << " total=" << wakeups << "\n";
     }
     psprecomp::AllegrexContext context = thread->second.context;
@@ -3343,9 +3346,38 @@ void create_semaphore(psprecomp::Runtime &runtime, psprecomp::AllegrexContext &c
     ctx.set_gpr(2, static_cast<std::uint32_t>(uid));
 }
 
+struct SemaEventRecord {
+    bool wait{};
+    std::int32_t sema{};
+    std::int32_t thread{};
+    std::int32_t count{};
+    std::int32_t value{};
+    std::size_t waiters{};
+    std::uint32_t ra{};
+};
+
+SemaEventRecord g_sema_events[256];
+std::size_t g_sema_event_count = 0u;
+
+void record_sema_event(bool wait, std::int32_t sema, std::int32_t count,
+                       std::uint32_t ra) {
+    if (std::getenv("PSPRECOMP_TOW2_SEMA_DIAG") == nullptr) return;
+    const auto found = g_semaphores.find(sema);
+    SemaEventRecord &event = g_sema_events[g_sema_event_count % 256u];
+    event.wait = wait;
+    event.sema = sema;
+    event.thread = g_scheduler.current_uid;
+    event.count = count;
+    event.value = found != g_semaphores.end() ? found->second.value : -1;
+    event.waiters = found != g_semaphores.end() ? found->second.waiters.size() : 0u;
+    event.ra = ra;
+    ++g_sema_event_count;
+}
+
 void wait_semaphore(psprecomp::Runtime &runtime, psprecomp::AllegrexContext &ctx) {
     const std::int32_t uid = static_cast<std::int32_t>(ctx.gpr[4]);
     const std::int32_t count = static_cast<std::int32_t>(ctx.gpr[5]);
+    record_sema_event(true, uid, count, ctx.gpr[31]);
     const auto semaphore = g_semaphores.find(uid);
     if (semaphore == g_semaphores.end() || count <= 0 || count > semaphore->second.maximum) {
         ctx.set_gpr(2, 0x80020199u);
@@ -3386,6 +3418,7 @@ void signal_semaphore(psprecomp::Runtime &runtime, psprecomp::AllegrexContext &c
     (void)runtime;
     const std::int32_t uid = static_cast<std::int32_t>(ctx.gpr[4]);
     const std::int32_t count = static_cast<std::int32_t>(ctx.gpr[5]);
+    record_sema_event(false, uid, count, ctx.gpr[31]);
     const auto semaphore = g_semaphores.find(uid);
     if (semaphore == g_semaphores.end() || count <= 0) {
         ctx.set_gpr(2, 0x80020199u);
@@ -3585,6 +3618,70 @@ void report_threads() {
         std::cerr << " " << entry.uid;
     }
     std::cerr << "\n";
+    if (g_mpeg_memory != nullptr &&
+        g_mpeg_memory->contains(0x08D9B920u, 4u)) {
+        const std::uint32_t manager = 0x08D9B920u;
+        const std::uint32_t vtable = g_mpeg_memory->load32(manager);
+        const std::uint32_t impl =
+            g_mpeg_memory->contains(manager + 0x3BF4u, 4u)
+                ? g_mpeg_memory->load32(manager + 0x3BF4u) : 0u;
+        const std::uint32_t id =
+            g_mpeg_memory->contains(manager + 0x3BF0u, 2u)
+                ? g_mpeg_memory->load16(manager + 0x3BF0u) : 0u;
+        std::cerr << "[tow2] quest manager vtable="
+                  << psprecomp::hex32(vtable)
+                  << " scene_impl=" << psprecomp::hex32(impl)
+                  << " scene_id=" << id
+                  << " callback=" << psprecomp::hex32(
+                         g_mpeg_memory->contains(manager + 0x3BF8u, 4u)
+                             ? g_mpeg_memory->load32(manager + 0x3BF8u) : 0u)
+                  << "\n";
+        if (impl != 0u && g_mpeg_memory->contains(impl, 8u)) {
+            std::cerr << "[tow2] scene vtable="
+                      << psprecomp::hex32(g_mpeg_memory->load32(impl))
+                      << " id=" << g_mpeg_memory->load32(impl + 4u) << "\n";
+        }
+    }
+    if (g_asset_owner != 0u && g_mpeg_memory != nullptr) {
+        const std::uint32_t container = g_asset_owner + 12032u;
+        std::cerr << "[tow2] title owner=" << psprecomp::hex32(g_asset_owner)
+                  << " container=" << psprecomp::hex32(container);
+        if (g_mpeg_memory->contains(container, 1236u)) {
+            std::cerr << " vtable="
+                      << psprecomp::hex32(g_mpeg_memory->load32(container))
+                      << " frame=" << g_mpeg_memory->load32(container + 1228u)
+                      << " anim=" << static_cast<unsigned>(
+                             g_mpeg_memory->load8(container + 1232u));
+        }
+        std::cerr << "\n";
+    }
+    std::cerr << "[tow2] callbacks:";
+    if (g_callbacks.empty()) {
+        std::cerr << " none";
+    }
+    for (const auto &[uid, callback] : g_callbacks) {
+        std::cerr << " uid=" << uid << " name=\"" << callback.name
+                  << "\" function=" << psprecomp::hex32(callback.function)
+                  << " arg=" << psprecomp::hex32(callback.argument);
+    }
+    std::cerr << "\n";
+    if (g_sema_event_count != 0u) {
+        const std::size_t shown =
+            std::min<std::size_t>(g_sema_event_count, 48u);
+        std::cerr << "[tow2] sema trace (last " << shown << " of "
+                  << g_sema_event_count << "):\n";
+        for (std::size_t i = 0u; i < shown; ++i) {
+            const std::size_t index =
+                (g_sema_event_count - shown + i) % 256u;
+            const SemaEventRecord &event = g_sema_events[index];
+            std::cerr << "  " << (event.wait ? "wait  " : "signal")
+                      << " sema=" << event.sema << " by=" << event.thread
+                      << " count=" << event.count
+                      << " value=" << event.value
+                      << " waiters=" << event.waiters
+                      << " ra=" << psprecomp::hex32(event.ra) << "\n";
+        }
+    }
     if (g_mpeg_memory != nullptr &&
         std::getenv("PSPRECOMP_TOW2_VFS_DUMP") != nullptr) {
         for (const std::uint32_t base : {0x08D4F0C0u, 0x08D4F120u}) {
@@ -4090,6 +4187,17 @@ void register_hle(psprecomp::Runtime &runtime, std::uint32_t user_arena_start) {
             }
             if (std::getenv("PSPRECOMP_TOW2_SLEEP_CB_NOW") != nullptr) {
                 delay_current_thread(rt, ctx, 1000u);
+                return;
+            }
+            // The module pump (0x08A6C3D8) signals SleepSema and then calls
+            // SleepThreadCB from 0x08A70418, expecting the frame interrupt to
+            // resume it. No guest WakeupThread ever targets that thread, and
+            // the title has no alarm/vblank-handler imports, so the only
+            // frame-paced source is the vblank tick. Model that wakeup here;
+            // other SleepThreadCB users keep true indefinite-sleep semantics.
+            if (ctx.gpr[31] == 0x08A70420u &&
+                std::getenv("PSPRECOMP_TOW2_SLEEP_CB_INFINITE") == nullptr) {
+                delay_current_thread(rt, ctx, 16683u);
                 return;
             }
             sleep_thread(rt, ctx);
@@ -4604,6 +4712,7 @@ void register_hle(psprecomp::Runtime &runtime, std::uint32_t user_arena_start) {
                           << " width=" << ctx.gpr[6]
                           << " buffer_ptr=" << psprecomp::hex32(buffer_ptr)
                           << " init=" << psprecomp::hex32(init)
+                          << " frame=" << g_present_count
                           << " dest=" << (buffer_ptr != 0u && rt.memory().contains(buffer_ptr, 4u)
                                                ? psprecomp::hex32(rt.memory().load32(buffer_ptr)) : "?")
                           << "\n";
@@ -4800,6 +4909,7 @@ void register_hle(psprecomp::Runtime &runtime, std::uint32_t user_arena_start) {
             g_framebuffer_format = ctx.gpr[6];
             static std::uint64_t presents = 0u;
             ++presents;
+            ++g_present_count;
             if (std::getenv("PSPRECOMP_TOW2_PRESENT_DIAG") != nullptr &&
                 (presents <= 3u || presents % 240u == 0u)) {
                 auto &memory = rt.memory();
