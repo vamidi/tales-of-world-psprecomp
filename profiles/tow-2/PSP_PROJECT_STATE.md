@@ -510,8 +510,35 @@ targets `ULJS00175`. Therefore:
 - To use PPSSPP as an oracle for this profile, the JP/English-patched ISO
   (`ULJS00175`) must be the loaded disc before setting breakpoints.
 
-## Title scene ordering (2026-11-17)
+### PPSSPP ULJS00175: first TitleArchive request captured (2026-11-18)
 
+Emulator confirmed on the target SKU (`ULJS00175` v1.01).
+
+- Breakpoint `0x08A59210` (mount) hit during boot:
+  ```
+  a0 = 0x08D4F1A0   manager
+  a1 = 0x08C23BC0   "TitleArchive/"
+  a2 = 0x09FB4A40   path object (source = title/title.arc)
+  ra = 0x08820740   inside 0x088206D8
+  ```
+- Immediately after, `0x08A59378` (the lookup) is called from
+  `ra=0x08A59C38` (inside `sub_08A59C10`) with **full virtual paths**:
+  ```
+  a1 = "TitleArchive/layer_01.ppt"   <-- first TitleArchive request
+  a1 = "TitleArchive/layer_02.ppt"
+  ```
+- Earlier lookups in the same API used other mounts:
+  `"system/common.eai"`, `"system/skit.ppt"`, `"game/savedata.bin"`.
+- So `0x08A59378` **is** the resolver, and a query carries the mount prefix.
+  The earlier "relative entry name" reading was specific to those mounts.
+- This also re-interprets the native probe result `find=9` for
+  `"TitleArchive/water_02.ppt"` as a real (non-zero) match return, not a
+  leftover.
+
+Native gap: the port never reaches `0x08A59C10` → `0x08A59378` with a
+`TitleArchive/...` query. The mount itself is valid.
+
+## Title scene ordering (2026-11-17)
 Goal: start the title mount before `user_main` resumes, then observe
 `TitleArchive/...` requests.
 
