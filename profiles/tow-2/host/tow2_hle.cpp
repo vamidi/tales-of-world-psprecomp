@@ -3548,6 +3548,36 @@ void report_threads() {
             break;
         }
     }
+    if (g_mpeg_memory != nullptr &&
+        std::getenv("PSPRECOMP_TOW2_PPT_SCAN") != nullptr) {
+        struct Pattern {
+            const char *name;
+            std::uint32_t word0;
+            std::uint32_t word1;
+        };
+        const Pattern patterns[] = {
+            {"sky.ppt", 0x00747070u, 0x02000200u},
+            {"titlelogo.ppt", 0x00747070u, 0x00800200u},
+            {"bird.ppt", 0x00747070u, 0x00800100u},
+            {"title.eai", 0x00494145u, 0x00000000u},
+        };
+        for (const Pattern &pattern : patterns) {
+            int hits = 0;
+            for (std::uint32_t address = 0x08800000u; address < 0x0A000000u;
+                 address += 4u) {
+                if (!g_mpeg_memory->contains(address + 8u, 8u)) break;
+                if (g_mpeg_memory->load32(address) != pattern.word0) continue;
+                if (g_mpeg_memory->load32(address + 4u) != pattern.word1) continue;
+                std::cerr << "[tow2-ppt] found " << pattern.name << " at "
+                          << psprecomp::hex32(address) << "\n";
+                if (++hits >= 6) break;
+            }
+            if (hits == 0) {
+                std::cerr << "[tow2-ppt] no " << pattern.name
+                          << " in guest memory\n";
+            }
+        }
+    }
     std::cerr << "[tow2] semaphores:\n";
     for (const auto &[uid, semaphore] : g_semaphores) {
         std::cerr << "  uid=" << uid << " name=\"" << semaphore.name

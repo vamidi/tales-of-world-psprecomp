@@ -634,6 +634,38 @@ in-memory EZBIND image with the correct size. No custom loader function is
 needed. The earlier “not loaded” symptom was purely I/O-visibility
 (`sceIoOpen` vs the raw sector-addressed `umd1:` read).
 
+### End-to-end usage verified (2026-11-18)
+
+Decompressed payload headers, which exist **only after inflating** (the archive
+buffer holds gzip bytes), were found in guest RAM at the end of the run:
+
+```
+[tow2-ppt] found sky.ppt      at 0x08F13240 0x08F92B80 0x09026840
+                                   0x090A6100 0x0913C300 0x09268780
+[tow2-ppt] found titlelogo.ppt at 0x093C7200 0x093E5280
+[tow2-ppt] found bird.ppt      at 0x090125C0 0x09408000 0x09BD8700
+[tow2-ppt] found title.eai     at 0x08F084C0 0x09026680 0x0913C240
+                                   0x091D2540 0x092A4CC0 0x092A4DC0
+```
+
+Patterns used: `70 70 74 00` + dimensions (`sky` 512x512
+`00 02 00 02`, `titlelogo` `00 02 80 00`, `bird` `00 01 80 00`) and
+`45 41 49 00` for EAI.
+
+Since the compressed archive contains none of these headers, their presence
+proves the game decompressed the entries. Full chain now verified:
+
+```
+raw UMD read (title.arc -> 0x09BF8780)
+  -> VFS mount TitleArchive/
+  -> 0x08A59C10 resolve of every title asset
+  -> gzip inflate into guest heap
+  -> title objects/textures
+```
+
+No custom loader or parser override is required; the port is end-to-end
+serving the title archive.
+
 ## Title scene ordering (2026-11-17)
 Goal: start the title mount before `user_main` resumes, then observe
 `TitleArchive/...` requests.
