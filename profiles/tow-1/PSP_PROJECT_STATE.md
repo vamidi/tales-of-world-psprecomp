@@ -176,6 +176,15 @@ missing-HLE/missing-AOT/GE-overflow counts from the local `town_*`, `guild_*`,
 `battle_*`, `field_*`, and `inn_*` logs. Those logs are diagnostic artifacts,
 not committed source; regenerate them with the capture commands above.
 
+Shareable poster: `PORT_STATUS.png`. Regenerate it with:
+
+```powershell
+python profiles\tow-1\scripts\make_port_status_image.py
+```
+
+The poster is AOT/recompilation coverage plus HLE and gameplay evidence; it is
+not a source-level decompilation percentage.
+
 ## Current diagnosis
 
 - Observation: OSK completes and frame 15500 is reachable with GE disabled,
