@@ -957,6 +957,25 @@ Findings:
 - Next: drive the menu cursor to `OK` (D-pad down, then confirm) and check
   the post-creation field transition.
 
+### Character creation -> field (2026-11-20)
+
+- The menu's `OK` opens a "Confirm this character?" dialog whose cursor
+  defaults to `No`. Press Up to select `Yes`, then Circle.
+- The confirm path calls `0x08AA33C0` (scene set to 0), fades through
+  `0x08D4F8D0`, and enters the field.
+- Fixed the remaining blockers:
+  - Allegrex encodes `msub`/`msubu` at SPECIAL funct `0x2E`/`0x2F`
+    (`0x0064002E` at `0x08838330`), not `0x1E`/`0x1F`. Added to the decoder
+    and regenerated.
+  - `scePower 0xEBD177D6` plus the battery/clock queries are stubbed as a
+    healthy AC-powered PSP.
+  - Extra seeds `0x0896FEC4` (title task prologue) and `0x08A0DF14` (field
+    function prologue) are now set in `scripts/generate.bat`.
+- Verified: frames 1000/1500/2000 show the field dialogue with Kanonno and
+  Pan ("Ah, Pan... I brought the laundry in.") and correctly rendered text.
+  Captured to `progress/frame_field.png` (untracked).
+- Next: advance the dialogue and check the next gameplay stall.
+
 ## Title scene ordering (2026-11-17)
 Goal: start the title mount before `user_main` resumes, then observe
 `TitleArchive/...` requests.

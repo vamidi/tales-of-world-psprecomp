@@ -94,6 +94,9 @@ DecodedInstruction decode_allegrex(std::uint32_t word) {
         case 0x2B: d.kind = OpcodeKind::Sltu; d.mnemonic = "sltu"; break;
         case 0x2C: d.kind = OpcodeKind::Max; d.mnemonic = "max"; break;
         case 0x2D: d.kind = OpcodeKind::Min; d.mnemonic = "min"; break;
+        // Allegrex encodes msub/msubu at 0x2E/0x2F (not 0x1E/0x1F).
+        case 0x2E: d.kind = OpcodeKind::Msub; d.mnemonic = "msub"; break;
+        case 0x2F: d.kind = OpcodeKind::Msubu; d.mnemonic = "msubu"; break;
         default: d.kind = OpcodeKind::Unsupported; d.mnemonic = "special?"; break;
         }
         break;

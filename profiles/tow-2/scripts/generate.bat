@@ -19,5 +19,8 @@ if not exist "%EBOOT%" (
 )
 
 echo Generating tow-2 corpus from %EBOOT%
+rem Extra prologues the automatic analyzer misses: the title task entry and
+rem a field-scene function called from 0x08A0DF14.
+set "PSPRECOMP_EXTRA_FUNCTIONS=0x0896FEC4,0x08A0DF14"
 "%RECOMP%" "%EBOOT%" --auto "%OUT%" 0x08804000 0x2000
 exit /b %ERRORLEVEL%

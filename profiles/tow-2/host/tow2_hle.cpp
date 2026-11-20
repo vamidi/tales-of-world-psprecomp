@@ -617,6 +617,7 @@ void scene_caller_hook(psprecomp::Runtime &runtime,
                 pad = runtime.memory().load32(0x08D4F6D0u);
             std::cerr << "[tow2-uid] pc=" << psprecomp::hex32(dispatch_pc)
                       << " uid=" << thread_uid
+                      << " t_us=" << g_scheduler.now_us
                       << " ra=" << psprecomp::hex32(ctx.gpr[31])
                       << " a0=" << psprecomp::hex32(ctx.gpr[4])
                       << " a1=" << psprecomp::hex32(ctx.gpr[5])
@@ -4910,6 +4911,41 @@ void charmake_wait_pump(psprecomp::Runtime &runtime,
             }
         }
     }
+    if (std::getenv("PSPRECOMP_TOW2_MENU_DIAG") != nullptr &&
+        ra == 0x089F5F50u) {
+        static std::uint32_t last_buttons = 0xFFFFFFFFu;
+        std::uint32_t buttons = 0u;
+        if (runtime.memory().contains(0x08D4F6DCu, 4u))
+            buttons = runtime.memory().load32(0x08D4F6DCu);
+        if (buttons != last_buttons) {
+            const std::uint32_t object = ctx.gpr[16];
+            std::uint32_t fields[6]{};
+            if (object != 0u &&
+                runtime.memory().contains(object, 0x40u)) {
+                for (std::uint32_t index = 0u; index < 6u; ++index)
+                    fields[index] =
+                        runtime.memory().load32(object + index * 4u);
+            }
+            std::uint32_t cursor = 0u;
+            if (object != 0u &&
+                runtime.memory().contains(object + 0x6394u, 4u))
+                cursor = runtime.memory().load32(object + 0x6394u);
+            std::cerr << "[tow2-menu] buttons="
+                      << psprecomp::hex32(buttons)
+                      << " obj=" << psprecomp::hex32(object)
+                      << " f0=" << psprecomp::hex32(fields[0])
+                      << " f1=" << psprecomp::hex32(fields[1])
+                      << " f2=" << psprecomp::hex32(fields[2])
+                      << " f3=" << psprecomp::hex32(fields[3])
+                      << " f4=" << psprecomp::hex32(fields[4])
+                      << " f5=" << psprecomp::hex32(fields[5])
+                      << " +6394=" << psprecomp::hex32(cursor)
+                      << " gpr19=" << psprecomp::hex32(ctx.gpr[19])
+                      << " gpr20=" << psprecomp::hex32(ctx.gpr[20])
+                      << " t_us=" << g_scheduler.now_us << "\n";
+            last_buttons = buttons;
+        }
+    }
     if (std::getenv("PSPRECOMP_TOW2_CHARMAKE_WAIT_TRACE") != nullptr &&
         ra == 0x089F5F50u) {
         static std::uint32_t last_state = 0xFFFFFFFFu;
@@ -4969,7 +5005,30 @@ void charmake_open_trace(psprecomp::Runtime &runtime,
               << " t_us=" << g_scheduler.now_us << "\n";
 }
 
+// Trace the shared button-state getter used by the menus.
+//   sceInputGet(manager, index) -> [manager + index*4 + 4]
+void input_get_trace(psprecomp::Runtime &runtime,
+                     psprecomp::AllegrexContext &ctx) {
+    const std::uint32_t manager = ctx.gpr[4];
+    const std::uint32_t index = ctx.gpr[5];
+    auto view = runtime.memory().aot_fast_view();
+    recomp_unit_0302_entry(runtime, ctx, 348u, view);
+    static std::uint32_t last_mask = 0xFFFFFFFFu;
+    const std::uint32_t mask = ctx.gpr[2];
+    if (mask != last_mask) {
+        std::cerr << "[tow2-input-get] mgr=" << psprecomp::hex32(manager)
+                  << " index=" << index
+                  << " mask=" << psprecomp::hex32(mask)
+                  << " t_us=" << g_scheduler.now_us << "\n";
+        last_mask = mask;
+    }
+}
+
 void register_overrides(psprecomp::Runtime &runtime) {
+    if (std::getenv("PSPRECOMP_TOW2_INPUT_GET_DIAG") != nullptr) {
+        runtime.register_function(0x08A61D94u, &input_get_trace,
+                                  "tow2_input_get_trace");
+    }
     if (std::getenv("PSPRECOMP_TOW2_CHARMAKE_WAIT") == nullptr ||
         std::getenv("PSPRECOMP_TOW2_CHARMAKE_COMPLETE") != nullptr ||
         std::getenv("PSPRECOMP_TOW2_CHARMAKE_WAIT_TRACE") != nullptr) {
@@ -5030,6 +5089,12 @@ void register_hle(psprecomp::Runtime &runtime, std::uint32_t user_arena_start) {
             runtime.register_function(0x08A76ED8u, &ge_draw_stub,
                                       "tow2_ge_draw_stub");
         }
+    }
+    if (std::getenv("PSPRECOMP_TOW2_EXIT_DIAG") != nullptr) {
+        std::atexit([] {
+            std::cerr << "[tow2-exit] t_us=" << g_scheduler.now_us
+                      << " presents=" << g_present_count << "\n";
+        });
     }
     g_partitions = PartitionTable{};
     g_partitions.next_address = (user_arena_start + 0xFFu) & ~0xFFu;
@@ -5155,6 +5220,69 @@ void register_hle(psprecomp::Runtime &runtime, std::uint32_t user_arena_start) {
             }
             ctx.set_gpr(2, 0u);
         });
+
+    // Power/clock queries: the field scene polls battery and clock state.
+    // Report a healthy, AC-powered PSP.
+    runtime.register_hle("scePower", 0xEBD177D6u, // scePower_EBD177D6
+        [](psprecomp::Runtime &, psprecomp::AllegrexContext &ctx) { ctx.set_gpr(2, 0u); });
+    runtime.register_hle("scePower", 0x87440F5Eu, // scePowerIsPowerOnline
+        [](psprecomp::Runtime &, psprecomp::AllegrexContext &ctx) { ctx.set_gpr(2, 1u); });
+    runtime.register_hle("scePower", 0x0AFD0D8Bu, // scePowerIsBatteryExist
+        [](psprecomp::Runtime &, psprecomp::AllegrexContext &ctx) { ctx.set_gpr(2, 1u); });
+    runtime.register_hle("scePower", 0x0AFD0D8Fu, // scePowerIsBatteryExist (alias)
+        [](psprecomp::Runtime &, psprecomp::AllegrexContext &ctx) { ctx.set_gpr(2, 1u); });
+    runtime.register_hle("scePower", 0x1E490401u, // scePowerIsBatteryCharging
+        [](psprecomp::Runtime &, psprecomp::AllegrexContext &ctx) { ctx.set_gpr(2, 0u); });
+    runtime.register_hle("scePower", 0x2085D15Du, // scePowerGetBatteryLifePercent
+        [](psprecomp::Runtime &, psprecomp::AllegrexContext &ctx) { ctx.set_gpr(2, 100u); });
+    runtime.register_hle("scePower", 0x8EFB3FA2u, // scePowerGetBatteryLifeTime
+        [](psprecomp::Runtime &, psprecomp::AllegrexContext &ctx) { ctx.set_gpr(2, 0xFFFFu); });
+    runtime.register_hle("scePower", 0xBD0F34C1u, // scePowerGetBatteryLifeTime (alias)
+        [](psprecomp::Runtime &, psprecomp::AllegrexContext &ctx) { ctx.set_gpr(2, 0xFFFFu); });
+    runtime.register_hle("scePower", 0x28E12023u, // scePowerGetBatteryTemp
+        [](psprecomp::Runtime &, psprecomp::AllegrexContext &ctx) { ctx.set_gpr(2, 25u); });
+    runtime.register_hle("scePower", 0x7E0FC088u, // scePowerGetBatteryTemp (alias)
+        [](psprecomp::Runtime &, psprecomp::AllegrexContext &ctx) { ctx.set_gpr(2, 25u); });
+    runtime.register_hle("scePower", 0x483CE86Bu, // scePowerGetBatteryVolt
+        [](psprecomp::Runtime &, psprecomp::AllegrexContext &ctx) { ctx.set_gpr(2, 4000u); });
+    runtime.register_hle("scePower", 0x28626C43u, // scePowerGetBatteryVolt (alias)
+        [](psprecomp::Runtime &, psprecomp::AllegrexContext &ctx) { ctx.set_gpr(2, 4000u); });
+    runtime.register_hle("scePower", 0xD3075926u, // scePowerIsLowBattery
+        [](psprecomp::Runtime &, psprecomp::AllegrexContext &ctx) { ctx.set_gpr(2, 0u); });
+    runtime.register_hle("scePower", 0x94F5A53Fu, // scePowerGetBatteryRemainCapacity
+        [](psprecomp::Runtime &, psprecomp::AllegrexContext &ctx) { ctx.set_gpr(2, 1800u); });
+    runtime.register_hle("scePower", 0xFD18A0FFu, // scePowerGetBatteryFullCapacity
+        [](psprecomp::Runtime &, psprecomp::AllegrexContext &ctx) { ctx.set_gpr(2, 1800u); });
+    runtime.register_hle("scePower", 0x862AE1A6u, // scePowerGetBatteryElec
+        [](psprecomp::Runtime &, psprecomp::AllegrexContext &ctx) { ctx.set_gpr(2, 0u); });
+    runtime.register_hle("scePower", 0x954A5C9Bu, // scePowerGetBatteryChargeStatus
+        [](psprecomp::Runtime &, psprecomp::AllegrexContext &ctx) { ctx.set_gpr(2, 0u); });
+    runtime.register_hle("scePower", 0xB4432BC8u, // scePowerGetBatteryChargingStatus
+        [](psprecomp::Runtime &, psprecomp::AllegrexContext &ctx) { ctx.set_gpr(2, 0u); });
+    runtime.register_hle("scePower", 0x0442D852u, // scePowerRequestColdReset
+        [](psprecomp::Runtime &, psprecomp::AllegrexContext &ctx) { ctx.set_gpr(2, 0u); });
+    runtime.register_hle("scePower", 0x78A1A796u, // scePowerIsSuspendRequired
+        [](psprecomp::Runtime &, psprecomp::AllegrexContext &ctx) { ctx.set_gpr(2, 0u); });
+    runtime.register_hle("scePower", 0xFDB5BFE9u, // scePowerGetCpuClockFrequency
+        [](psprecomp::Runtime &, psprecomp::AllegrexContext &ctx) { ctx.set_gpr(2, 333u); });
+    runtime.register_hle("scePower", 0x478FE6F5u, // scePowerGetBusClockFrequency
+        [](psprecomp::Runtime &, psprecomp::AllegrexContext &ctx) { ctx.set_gpr(2, 166u); });
+    runtime.register_hle("scePower", 0x342061E5u, // scePowerGetCpuClockFrequencyInt
+        [](psprecomp::Runtime &, psprecomp::AllegrexContext &ctx) { ctx.set_gpr(2, 333u); });
+    runtime.register_hle("scePower", 0x9A26D2C4u, // scePowerGetBusClockFrequencyInt
+        [](psprecomp::Runtime &, psprecomp::AllegrexContext &ctx) { ctx.set_gpr(2, 166u); });
+    runtime.register_hle("scePower", 0xADAC1E50u, // scePowerSetClockFrequency
+        [](psprecomp::Runtime &, psprecomp::AllegrexContext &ctx) { ctx.set_gpr(2, 0u); });
+    runtime.register_hle("scePower", 0x737486F2u, // scePowerSetClockFrequency (alias)
+        [](psprecomp::Runtime &, psprecomp::AllegrexContext &ctx) { ctx.set_gpr(2, 0u); });
+    runtime.register_hle("scePower", 0x843FBF43u, // scePowerSetCpuClockFrequency
+        [](psprecomp::Runtime &, psprecomp::AllegrexContext &ctx) { ctx.set_gpr(2, 0u); });
+    runtime.register_hle("scePower", 0xB8D7B2E2u, // scePowerSetBusClockFrequency
+        [](psprecomp::Runtime &, psprecomp::AllegrexContext &ctx) { ctx.set_gpr(2, 0u); });
+    runtime.register_hle("scePower", 0x04B7766Eu, // scePowerRegisterCallback
+        [](psprecomp::Runtime &, psprecomp::AllegrexContext &ctx) { ctx.set_gpr(2, 0u); });
+    runtime.register_hle("scePower", 0xDFA8BAF8u, // scePowerUnregisterCallback
+        [](psprecomp::Runtime &, psprecomp::AllegrexContext &ctx) { ctx.set_gpr(2, 0u); });
 
     runtime.register_hle("SysMemUserForUser", 0x237DBD4Fu, // sceKernelAllocPartitionMemory
         [](psprecomp::Runtime &rt, psprecomp::AllegrexContext &ctx) {
