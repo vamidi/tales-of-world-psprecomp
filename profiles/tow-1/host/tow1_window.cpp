@@ -34,6 +34,7 @@ constexpr std::uint32_t kPresentMessage = WM_APP + 1u;
 std::atomic<bool> g_enabled{true};
 std::atomic<bool> g_close_requested{false};
 std::atomic<std::uint32_t> g_buttons{0u};
+std::atomic<std::uint32_t> g_override_buttons{0u};
 std::atomic<std::uint32_t> g_auto_cross_until{0u};
 std::atomic<std::uint32_t> g_auto_last_trigger{0u};
 std::mutex g_mutex;
@@ -470,8 +471,12 @@ void window_shutdown() {
 #endif
 }
 
+void window_set_override_buttons(std::uint32_t mask) {
+    g_override_buttons.store(mask);
+}
+
 std::uint32_t window_buttons() {
-    std::uint32_t buttons = g_buttons.load();
+    std::uint32_t buttons = g_buttons.load() | g_override_buttons.load();
     if (g_present_count < g_auto_cross_until.load()) buttons |= 0x2000u;
     for (const ScheduledInput &input : g_scheduled_inputs) {
         if (g_present_count >= input.start && g_present_count < input.end)

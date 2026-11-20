@@ -24,5 +24,6 @@ void window_shutdown();
 // Live PSP button mask sampled from the host window, or 0 when the window is
 // unavailable. Bit assignments match sceCtrl's SceCtrlData buttons.
 std::uint32_t window_buttons();
+void window_set_override_buttons(std::uint32_t mask);
 
 } // namespace tow1

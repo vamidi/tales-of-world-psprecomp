@@ -618,13 +618,16 @@ If the game does not progress in PPSSPP either, install PSP firmware
   index to 7 (**Exit town**). This makes the Guild selection deterministic
   **once the town menu is on screen**; it does not yet make the
   shop-to-town-menu transition deterministic.
-- `PSPRECOMP_TOW1_FORCE_TOWN_AT_PRESENT=N` — host pre-dispatch redirect into
+- `PSPRECOMP_TOW1_FORCE_TOWN_AT_PRESENT=N` — host pre-dispatch attempt to enter
   the Town task (`0x08828570`) at post-OSK present `N`. The task-table trace is
-  `Title -> FUN_088216ac`, `Town -> FUN_08828570`, from the name/function
-  table at `0x08D42240`. Current result: the redirect fails with
-  `invalid internal function entry` because it bypasses the registered-unit
-  entry id; use `Runtime::invoke_isolated_aot` or the task manager instead of
-  writing `ctx.pc` directly.
+  `Title -> FUN_088216ac`, `Town -> FUN_08828570`, from the name/function table
+  at `0x08D42240`.
+  - Direct `ctx.pc` redirect: `invalid internal function entry` (bypasses the
+    registered unit entry id).
+  - `Runtime::invoke_isolated_aot` loop: 1,000,000 steps, ended at
+    `0x08B17FD8` in the scheduler without opening the menu. The Town task needs
+    the real task manager/scheduler and cannot be run as an isolated AOT call.
+  - Quest list still not captured through this path.
 - `PSPRECOMP_TOW1_FRAME_DIAG=1`
 - `PSPRECOMP_TOW1_FRAME_DUMP=...`
 - `PSPRECOMP_EXTRA_FUNCTIONS=0x...` (generator extra entry seeds)

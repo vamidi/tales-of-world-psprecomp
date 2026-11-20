@@ -31,25 +31,37 @@ bool g_force_used = false;
 std::uint32_t g_force_target_present = 0u;
 constexpr std::uint32_t kForceReturnSentinel = 0x08804000u;
 
-void force_town_pre_dispatch(psprecomp::Runtime &, psprecomp::AllegrexContext &ctx,
+void force_town_pre_dispatch(psprecomp::Runtime &runtime, psprecomp::AllegrexContext &ctx,
                              std::uint32_t, std::int32_t) {
     if (!g_force_used && !g_force_active &&
         tow1::window_post_osk_present_count() >= g_force_target_present) {
         g_force_saved_context = ctx;
         g_force_active = true;
         g_force_used = true;
-        ctx.pc = 0x08828570u;
-        ctx.gpr[29] = g_force_saved_context.gpr[29];
-        ctx.gpr[31] = kForceReturnSentinel;
-        ctx.gpr[4] = 0u;
-        std::cerr << "[tow1-force-town] entering Town task at present="
+        psprecomp::AllegrexContext town = ctx;
+        town.pc = 0x08828570u;
+        town.gpr[29] = ctx.gpr[29] - 0x2000u;
+        town.gpr[31] = kForceReturnSentinel;
+        town.gpr[4] = 0u;
+        // The town menu confirms with Circle; holding it makes the traced
+        // FUN_08a55858 loop return index 0 (Guild).
+        tow1::window_set_override_buttons(0x2000u);
+        std::cerr << "[tow1-force-town] invoking Town task at present="
                   << tow1::window_post_osk_present_count() << "\n";
-        return;
-    }
-    if (g_force_active && ctx.pc == kForceReturnSentinel) {
+        unsigned steps = 0u;
+        while (town.pc != kForceReturnSentinel && steps < 1000000u) {
+            if (!runtime.invoke_isolated_aot(town.pc, town)) {
+                std::cerr << "[tow1-force-town] stopped at non-entry PC "
+                          << psprecomp::hex32(town.pc) << " after " << steps << "\n";
+                break;
+            }
+            ++steps;
+        }
+        tow1::window_set_override_buttons(0u);
+        std::cerr << "[tow1-force-town] Town task loop end pc="
+                  << psprecomp::hex32(town.pc) << " steps=" << steps << "\n";
         ctx = g_force_saved_context;
         g_force_active = false;
-        std::cerr << "[tow1-force-town] Town task returned; restored context\n";
     }
 }
 
