@@ -995,11 +995,21 @@ Findings:
 - Verified: the first line ("Ah, Pan... I brought the laundry in.") advances
   to the portrait-less line "Kanonno: ...!" and the skit portraits close.
   Captured to `progress/frame_skit_next.png` (untracked).
-- Next stall: the "…!" line does not advance. It is a voice-wait line:
-  `cSoundVoice` stays idle (`pattern=0x3 waiters=1`), the field UI voice flag
-  `0x08DC1AF8+0x60` (`0x08DC1B58`) never sets, and no voice asset is opened.
-  The skit controller remains in state 1. Modeling the voice completion (or
-  retiring the voice wait) is the next step.
+- Each skit line has its own text object, reached through the skit
+  controller's `+0x08` pointer (`0x08DA0348`). The first line uses
+  `0x08DC1810`; the "…!" line uses `0x08DA1520`. The advance model must
+  follow that pointer, not the global field UI. With that, the "…!" line
+  also advances.
+- The skit completes after the second line: the portraits close, the text
+  window disappears, and the game returns to the field (the character
+  standing in the blue-tiled room, no HUD). Captured to
+  `progress/frame_field_idle.png` (untracked).
+- Added `PSPRECOMP_TOW2_PAD_ANALOG="time_us:lx:ly[:hold_us],..."`
+  (0x80 center, Y grows downward) to inject the analog stick.
+- Next stall: the field is static. D-pad and analog-stick movement do not
+  move the character; the quest manager still reports `scene_id=65535`.
+  The field event may be waiting for a script trigger, or field control is
+  not enabled yet.
 
 ## Title scene ordering (2026-11-17)
 Goal: start the title mount before `user_main` resumes, then observe

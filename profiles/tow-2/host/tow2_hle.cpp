@@ -4613,6 +4613,71 @@ std::uint32_t injected_pad_mask() {
     return buttons;
 }
 
+// Deterministic analog-stick script: "time_us:lx:ly[:hold_us],...".
+// lx/ly are 0..255; 0x80 is center. Y grows downward (0x00 up, 0xFF down).
+std::uint32_t injected_analog() {
+    std::uint32_t value = 0x80808080u;
+    const char *script_text = std::getenv("PSPRECOMP_TOW2_PAD_ANALOG");
+    if (script_text == nullptr || *script_text == '\0') return value;
+    struct AnalogEvent {
+        std::uint64_t time_us{};
+        std::uint32_t lx{0x80u};
+        std::uint32_t ly{0x80u};
+        std::uint64_t hold_us{250000u};
+    };
+    static bool loaded = false;
+    static std::vector<AnalogEvent> events;
+    if (!loaded) {
+        loaded = true;
+        const char *cursor = script_text;
+        while (*cursor != '\0') {
+            while (*cursor == ',' || *cursor == ' ' || *cursor == '\n')
+                ++cursor;
+            if (*cursor == '\0') break;
+            char *end = nullptr;
+            const unsigned long long time_value =
+                std::strtoull(cursor, &end, 0);
+            if (end == cursor) break;
+            cursor = end;
+            if (*cursor != ':') break;
+            ++cursor;
+            const unsigned long long lx_value =
+                std::strtoull(cursor, &end, 0);
+            if (end == cursor) break;
+            cursor = end;
+            if (*cursor != ':') break;
+            ++cursor;
+            const unsigned long long ly_value =
+                std::strtoull(cursor, &end, 0);
+            if (end == cursor) break;
+            cursor = end;
+            AnalogEvent event;
+            event.time_us = time_value;
+            event.lx = static_cast<std::uint32_t>(lx_value);
+            event.ly = static_cast<std::uint32_t>(ly_value);
+            if (*cursor == ':') {
+                ++cursor;
+                const unsigned long long hold_value =
+                    std::strtoull(cursor, &end, 0);
+                if (end != cursor && hold_value != 0u)
+                    event.hold_us = hold_value;
+                cursor = end;
+            }
+            events.push_back(event);
+            while (*cursor != '\0' && *cursor != ',') ++cursor;
+        }
+    }
+    for (const AnalogEvent &event : events) {
+        if (g_scheduler.now_us >= event.time_us &&
+            g_scheduler.now_us < event.time_us + event.hold_us) {
+            value = (event.lx & 0xFFu) |
+                    ((event.ly & 0xFFu) << 8) |
+                    (0x80u << 16) | (0x80u << 24);
+        }
+    }
+    return value;
+}
+
 // Snapshot a guest region at one guest time and print the 32-bit words that
 // changed by a later guest time. Used to locate the class-grid selection
 // fields without relying on a matching Ghidra build.
@@ -6235,36 +6300,50 @@ void register_hle(psprecomp::Runtime &runtime, std::uint32_t user_arena_start) {
                     }
                 }
             }
-            // Skit advance model: the skit text window is fieldUI+0x74, but
-            // the standard message close path only consults fieldUI+0x704
-            // (which the skit leaves at zero). Once the field UI has latched
-            // an advance request (+0x12D) and the text is fully revealed,
-            // retire the text so the skit controller can run the next
-            // command. PSPRECOMP_TOW2_SKIT_WAIT=1 keeps the true wait.
+            // Skit advance model: each skit line has a text object reached
+            // through the skit controller's +0x08 pointer. The standard
+            // message close path only consults fieldUI+0x704 (which the skit
+            // leaves at zero), so the text position at +0x11C never becomes
+            // -1. Once the object latches an advance request (+0x12D) and the
+            // text is revealed, retire the text so the controller can run the
+            // next command. PSPRECOMP_TOW2_SKIT_WAIT=1 keeps the true wait.
             if (std::getenv("PSPRECOMP_TOW2_SKIT_WAIT") == nullptr) {
                 auto &memory = rt.memory();
-                constexpr std::uint32_t kFieldUi = 0x08DC1810u;
-                constexpr std::uint32_t kSkitWindow = kFieldUi + 0x74u;
-                constexpr std::uint32_t kTextPosition = kFieldUi + 0x11Cu;
-                constexpr std::uint32_t kAdvance = kFieldUi + 0x12Du;
-                constexpr std::uint32_t kTextComplete = kFieldUi + 0x718u;
-                if (memory.contains(kSkitWindow, 4u) &&
-                    memory.contains(kTextPosition, 4u)) {
-                    const std::uint32_t skit = memory.load32(kSkitWindow);
-                    const std::uint32_t position = memory.load32(kTextPosition);
-                    const std::uint32_t advance = memory.load8(kAdvance);
-                    if (skit != 0u && advance != 0u &&
-                        position != 0u && position != 0xFFFFFFFFu) {
-                        memory.store32(kTextPosition, 0xFFFFFFFFu);
-                        memory.store8(kAdvance, 0u);
-                        memory.store8(kFieldUi + 0x12Cu, 0u);
-                        memory.store8(kTextComplete, 0u);
-                        static std::uint32_t retired = 0u;
-                        if (retired++ < 16u) {
-                            std::cerr << "[tow2-skit] advance position="
-                                      << psprecomp::hex32(position)
-                                      << " frame=" << g_present_count
-                                      << " t_us=" << g_scheduler.now_us << "\n";
+                constexpr std::uint32_t kSkitController = 0x08DA0340u;
+                if (memory.contains(kSkitController + 8u, 4u)) {
+                    const std::uint32_t object =
+                        memory.load32(kSkitController + 8u);
+                    if (object != 0u) {
+                        const std::uint32_t skitWindow = object + 0x74u;
+                        const std::uint32_t textPosition = object + 0x11Cu;
+                        const std::uint32_t advance = object + 0x12Du;
+                        const std::uint32_t textComplete = object + 0x718u;
+                        if (memory.contains(skitWindow, 4u) &&
+                            memory.contains(textPosition, 4u)) {
+                            const std::uint32_t skit =
+                                memory.load32(skitWindow);
+                            const std::uint32_t position =
+                                memory.load32(textPosition);
+                            const std::uint32_t advanceFlag =
+                                memory.load8(advance);
+                            if (skit != 0u && advanceFlag != 0u &&
+                                position != 0u &&
+                                position != 0xFFFFFFFFu) {
+                                memory.store32(textPosition, 0xFFFFFFFFu);
+                                memory.store8(advance, 0u);
+                                memory.store8(object + 0x12Cu, 0u);
+                                memory.store8(textComplete, 0u);
+                                static std::uint32_t retired = 0u;
+                                if (retired++ < 16u) {
+                                    std::cerr << "[tow2-skit] advance object="
+                                              << psprecomp::hex32(object)
+                                              << " position="
+                                              << psprecomp::hex32(position)
+                                              << " frame=" << g_present_count
+                                              << " t_us=" << g_scheduler.now_us
+                                              << "\n";
+                                }
+                            }
                         }
                     }
                 }
@@ -6459,7 +6538,7 @@ void register_hle(psprecomp::Runtime &runtime, std::uint32_t user_arena_start) {
                 rt.memory().zero(at, 16u);
                 rt.memory().store32(at, static_cast<std::uint32_t>(g_scheduler.now_us));
                 rt.memory().store32(at + 4u, buttons);
-                rt.memory().store32(at + 8u, 0x80808080u);
+                rt.memory().store32(at + 8u, injected_analog());
                 rt.memory().store32(at + 12u, 0u);
             }
             ctx.set_gpr(2, count);
