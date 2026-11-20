@@ -1026,10 +1026,19 @@ Findings:
     `scene_impl`). The charmake path bypasses the normal field-scene load,
     so the event-end cleanup (clear event mode, attach the player, spawn the
     actors) never runs.
-  - Reattaching the player in the present hook is overwritten each frame by
-    the event path (`PSPRECOMP_TOW2_FIELD_CONTROL=1` experiments with this).
-    The next step is to attach the field scenario (or model its event-end
-    cleanup) rather than patching the leader fields.
+  - The opening-event trigger is `leader+0x1134` (id 117). Retiring it
+    (set `-1`) is safe and is modeled by `PSPRECOMP_TOW2_FIELD_CONTROL=1`.
+  - The leader target `leader+0x1174` is **not** the raw model: it must be a
+    trigger-compatible actor. Writing `0x08DBC820` there crashes the
+    collision check `0x08A801E4` (the model's RTTI is `"USRD"`).
+  - The player actor is missing: the scene manager's actor header array
+    (`0x08D9B924`) and controller array (`0x08D9BBE8`) are empty. The field
+    scenario (`scene_impl`) is what creates them.
+  - The normal field-follow state is `leader+0x1151 = 0x0D` (bit 0 set);
+    the field path `0x08A185D4` uses the target at `+0x1174`.
+  - Next: implement the actor spawn (create the player actor header and
+    controller, populate the field actor list at `field+0x0C`) or load the
+    field scenario.
 
 ## Title scene ordering (2026-11-17)
 Goal: start the title mount before `user_main` resumes, then observe

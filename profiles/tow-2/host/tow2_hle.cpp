@@ -6363,17 +6363,20 @@ void register_hle(psprecomp::Runtime &runtime, std::uint32_t user_arena_start) {
                     const std::uint32_t player =
                         memory.contains(entities, 4u)
                             ? memory.load32(entities) : 0u;
-                    const std::uint8_t mode = memory.load8(kLeader + 4433u);
-                    if (player != 0u && (mode & 1u) != 0u) {
-                        memory.store8(
-                            kLeader + 4433u,
-                            static_cast<std::uint8_t>(mode & ~1u));
-                        memory.store32(kLeader + 4468u, player);
-                        static std::uint32_t attached = 0u;
-                        if (attached++ < 8u) {
-                            std::cerr << "[tow2-field] attach player="
-                                      << psprecomp::hex32(player)
-                                      << " mode=" << psprecomp::hex32(mode)
+                    const std::uint32_t trigger =
+                        memory.load32(kLeader + 4404u);
+                    if (player != 0u && trigger != 0xFFFFFFFFu) {
+                        // Retire the opening-event trigger. The leader target
+                        // (+0x1174) is not the raw model: it must be a
+                        // trigger-compatible actor, and the field scenario
+                        // (scene_impl) is what creates that actor. Writing the
+                        // model there crashes the collision check 0x08A801E4.
+                        memory.store32(kLeader + 4404u, 0xFFFFFFFFu);
+                        memory.store32(kLeader + 4408u, 0u);
+                        static std::uint32_t retired = 0u;
+                        if (retired++ < 8u) {
+                            std::cerr << "[tow2-field] retire trigger="
+                                      << psprecomp::hex32(trigger)
                                       << " frame=" << g_present_count
                                       << " t_us=" << g_scheduler.now_us << "\n";
                         }
