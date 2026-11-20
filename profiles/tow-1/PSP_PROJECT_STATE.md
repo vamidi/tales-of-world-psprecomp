@@ -569,11 +569,27 @@ Remote debugger is enabled (`RemoteDebuggerOnStartup = True`) and listens on
 
 PPSSPP MCP (`mcp-ppsspp` 0.2.0) exposes no savestate save/load call; its
 documented substitute is PPSSPP's own hotkeys/UI. On 2026-11-20 the instance
-is back on the correct **Radiant Mythology** (`ULES00837` v1.00), but it is
-currently in a dungeon scene, not Ailily, and no `.ppst` town state exists.
-The MCP screenshot call still returns `Could not download output`; a Windows
-`PrintWindow` capture works, but it can show the last rendered frame even when
-the window is black or covered.
+is on the correct **Radiant Mythology** (`ULES00837` v1.00), currently at the
+opening/title. No `.ppst` town state exists.
+The MCP `gpu.buffer.*` screenshot call still returns `Could not download
+output`. Workaround used here: read VRAM at `0x04088000` in 64 KiB chunks and
+decode 512-stride RGBA; the game renders correctly at 480x272
+(`ppsspp_now_rgba.png`). The PPSSPP window itself may be minimized, so
+`PrintWindow` is not reliable.
+
+Task-manager observation from PPSSPP memory: `0x08D422A8` is a task stack
+header:
+
+```text
++0x00  table pointer (0x08D42238)
++0x04  active task count
++0x08  current task index
++0x0C  next request (-1 = none)
+```
+
+At the opening, count=1 and current=0. Writing the current index to 2, or
+setting PC directly to `0x08828570`, does not switch tasks; the manager needs a
+proper task push/request. This is the remaining town-transition mechanism.
 
 The native exploration runs are headless (`PSPRECOMP_TOW1_NO_WINDOW=1`):
 there is intentionally no visible `Tow1Native` window, and each captured PPM
