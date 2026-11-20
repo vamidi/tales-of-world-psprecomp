@@ -587,9 +587,11 @@ header:
 +0x0C  next request (-1 = none)
 ```
 
-At the opening, count=1 and current=0. Writing the current index to 2, or
-setting PC directly to `0x08828570`, does not switch tasks; the manager needs a
-proper task push/request. This is the remaining town-transition mechanism.
+At the opening, count=1 and current=0. Writing the current index to 2,
+setting count=2/current=1, or setting PC directly to `0x08828570`, does not
+switch tasks; the manager needs a proper task push/request. This is the
+remaining town-transition mechanism. PPSSPP was reset afterward to restore a
+clean opening state.
 
 The native exploration runs are headless (`PSPRECOMP_TOW1_NO_WINDOW=1`):
 there is intentionally no visible `Tow1Native` window, and each captured PPM
