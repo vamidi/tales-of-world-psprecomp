@@ -976,6 +976,31 @@ Findings:
   Captured to `progress/frame_field.png` (untracked).
 - Next: advance the dialogue and check the next gameplay stall.
 
+### Skit dialogue advance (2026-11-20)
+
+- The field conversation is a **skit** (`system/skit.ppt`), not the standard
+  message window. The text lives in the field UI's buffer
+  (`0x08DC1810+0x0F8`, length at `+0x10C`) and the skit text window is at
+  `fieldUI+0x74` (`0x08DC1884`).
+- The field UI text position is `fieldUI+0x11C` (`0x08DC192C`); the reveal
+  counter runs to `0x147`, then the text-complete byte
+  `fieldUI+0x718` (`0x08DC1F28`) becomes 1.
+- The standard advance path (`0x08961814`) only closes the message window at
+  `fieldUI+0x704` (`0x08DC1F14`), which the skit leaves at 0. So the text
+  position never becomes `-1` and the skit controller stays in state 1.
+- Model: once the field UI latches an advance (`+0x12D == 1`) and the skit
+  text is fully revealed, retire the text (set `+0x11C = -1`, clear
+  `+0x12C`, `+0x12D`, `+0x718`). The controller then runs the next command.
+  `PSPRECOMP_TOW2_SKIT_WAIT=1` keeps the true wait.
+- Verified: the first line ("Ah, Pan... I brought the laundry in.") advances
+  to the portrait-less line "Kanonno: ...!" and the skit portraits close.
+  Captured to `progress/frame_skit_next.png` (untracked).
+- Next stall: the "…!" line does not advance. It is a voice-wait line:
+  `cSoundVoice` stays idle (`pattern=0x3 waiters=1`), the field UI voice flag
+  `0x08DC1AF8+0x60` (`0x08DC1B58`) never sets, and no voice asset is opened.
+  The skit controller remains in state 1. Modeling the voice completion (or
+  retiring the voice wait) is the next step.
+
 ## Title scene ordering (2026-11-17)
 Goal: start the title mount before `user_main` resumes, then observe
 `TitleArchive/...` requests.

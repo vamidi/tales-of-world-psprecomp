@@ -3516,14 +3516,18 @@ void font_get_glyph(psprecomp::Runtime &runtime, psprecomp::AllegrexContext &ctx
     }
     HostGlyph glyph;
     rasterize_host_glyph(ctx.gpr[5] & 0xFFFFu, g_font_pixel_height, glyph);
-    if (std::getenv("PSPRECOMP_TOW2_LIBFONT_DIAG") != nullptr) {
+    if (std::getenv("PSPRECOMP_TOW2_LIBFONT_DIAG") != nullptr &&
+        g_scheduler.now_us > 25000000u) {
         static std::uint32_t logged = 0u;
-        if (logged++ < 16u) {
+        if (logged++ < 64u) {
             std::size_t ink = 0u;
             for (const std::uint8_t pixel : glyph.pixels)
                 ink += pixel != 0u ? 1u : 0u;
             std::cerr << "[tow2-font] glyph char="
                       << psprecomp::hex32(ctx.gpr[5])
+                      << " ra=" << psprecomp::hex32(ctx.gpr[31])
+                      << " obj=" << psprecomp::hex32(ctx.gpr[18])
+                      << " str=" << psprecomp::hex32(ctx.gpr[19])
                       << " size=" << glyph.width << 'x' << glyph.height
                       << " ink=" << ink
                       << " fmt=" << runtime.memory().load32(image_pointer)
@@ -5011,6 +5015,8 @@ void input_get_trace(psprecomp::Runtime &runtime,
                      psprecomp::AllegrexContext &ctx) {
     const std::uint32_t manager = ctx.gpr[4];
     const std::uint32_t index = ctx.gpr[5];
+    const std::uint32_t caller = ctx.gpr[31];
+    const std::uint32_t caller_object = ctx.gpr[16];
     auto view = runtime.memory().aot_fast_view();
     recomp_unit_0302_entry(runtime, ctx, 348u, view);
     static std::uint32_t last_mask = 0xFFFFFFFFu;
@@ -5019,8 +5025,35 @@ void input_get_trace(psprecomp::Runtime &runtime,
         std::cerr << "[tow2-input-get] mgr=" << psprecomp::hex32(manager)
                   << " index=" << index
                   << " mask=" << psprecomp::hex32(mask)
+                  << " ra=" << psprecomp::hex32(caller)
                   << " t_us=" << g_scheduler.now_us << "\n";
         last_mask = mask;
+    }
+    // Field UI object: watch the message-window state on confirm/start.
+    if ((caller == 0x08968E3Cu || caller == 0x08969234u) &&
+        (mask & 0x2008u) != 0u) {
+        const std::uint32_t object = caller_object;
+        std::uint32_t fields[8]{};
+        if (object != 0u) {
+            static constexpr std::uint32_t offsets[8] = {
+                276u, 292u, 301u, 304u, 308u, 328u, 1796u, 1953u};
+            for (std::uint32_t index2 = 0u; index2 < 8u; ++index2) {
+                const std::uint32_t address = object + offsets[index2];
+                if (runtime.memory().contains(address, 4u))
+                    fields[index2] = runtime.memory().load32(address);
+            }
+        }
+        std::cerr << "[tow2-field-ui] mask=" << psprecomp::hex32(mask)
+                  << " obj=" << psprecomp::hex32(object)
+                  << " +276=" << psprecomp::hex32(fields[0])
+                  << " +292=" << psprecomp::hex32(fields[1])
+                  << " +301=" << psprecomp::hex32(fields[2] & 0xFFu)
+                  << " +304=" << psprecomp::hex32(fields[3])
+                  << " +308=" << psprecomp::hex32(fields[4] & 0xFFu)
+                  << " +328=" << psprecomp::hex32(fields[5])
+                  << " +1796=" << psprecomp::hex32(fields[6])
+                  << " +1953=" << psprecomp::hex32(fields[7] & 0xFFu)
+                  << " t_us=" << g_scheduler.now_us << "\n";
     }
 }
 
@@ -6198,6 +6231,40 @@ void register_hle(psprecomp::Runtime &runtime, std::uint32_t user_arena_start) {
                                           << " manager="
                                           << psprecomp::hex32(manager) << "\n";
                             }
+                        }
+                    }
+                }
+            }
+            // Skit advance model: the skit text window is fieldUI+0x74, but
+            // the standard message close path only consults fieldUI+0x704
+            // (which the skit leaves at zero). Once the field UI has latched
+            // an advance request (+0x12D) and the text is fully revealed,
+            // retire the text so the skit controller can run the next
+            // command. PSPRECOMP_TOW2_SKIT_WAIT=1 keeps the true wait.
+            if (std::getenv("PSPRECOMP_TOW2_SKIT_WAIT") == nullptr) {
+                auto &memory = rt.memory();
+                constexpr std::uint32_t kFieldUi = 0x08DC1810u;
+                constexpr std::uint32_t kSkitWindow = kFieldUi + 0x74u;
+                constexpr std::uint32_t kTextPosition = kFieldUi + 0x11Cu;
+                constexpr std::uint32_t kAdvance = kFieldUi + 0x12Du;
+                constexpr std::uint32_t kTextComplete = kFieldUi + 0x718u;
+                if (memory.contains(kSkitWindow, 4u) &&
+                    memory.contains(kTextPosition, 4u)) {
+                    const std::uint32_t skit = memory.load32(kSkitWindow);
+                    const std::uint32_t position = memory.load32(kTextPosition);
+                    const std::uint32_t advance = memory.load8(kAdvance);
+                    if (skit != 0u && advance != 0u &&
+                        position != 0u && position != 0xFFFFFFFFu) {
+                        memory.store32(kTextPosition, 0xFFFFFFFFu);
+                        memory.store8(kAdvance, 0u);
+                        memory.store8(kFieldUi + 0x12Cu, 0u);
+                        memory.store8(kTextComplete, 0u);
+                        static std::uint32_t retired = 0u;
+                        if (retired++ < 16u) {
+                            std::cerr << "[tow2-skit] advance position="
+                                      << psprecomp::hex32(position)
+                                      << " frame=" << g_present_count
+                                      << " t_us=" << g_scheduler.now_us << "\n";
                         }
                     }
                 }
