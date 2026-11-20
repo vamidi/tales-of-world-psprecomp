@@ -508,10 +508,13 @@ The full import/HLE matrix and milestone order live in
    `shop_stairs.ppm.51500.png`; the current R/Quit/stairs script is
    frame-sensitive, so first make the cursor selection stable (or use a visible
    manual run).
-   - Ghidra lead: the town-menu class string is `9cMenuTown` at
-     `0x08C19820`; constructors `FUN_08a6704c` and `FUN_08a67234` set vtable
-     `0x417870`. Find the update/input method and either hook the open path or
-     add a host-side diagnostic that selects the `Guild` entry deterministically.
+   - Ghidra trace: the town-menu class string is `9cMenuTown` at
+     `0x08C19820`. Menu-page constructors `FUN_08a6704c`/`FUN_08a67234` set
+     vtable `0x08C1B870`; `FUN_08a6771c`/`FUN_08a68260` set page vtables
+     `0x08C1B9D0`/`0x08C1BCE0`. The vtable slots at `+0x...` dispatch through
+     generic menu/tree helpers. `PSPRECOMP_TOW1_AUTO_GUILD=1` now detects the
+     town-map pixels and presses Cross, so the remaining target is the
+     **open-transition** function, not the Guild cursor.
 2. Re-check `cSoundManager`: it should resume at `0x08B1CE44` once the title
    frame loop runs; silent SAS is still acceptable until audio is required.
 3. Compare native frames with PPSSPP during the movie/title transition.
@@ -597,6 +600,11 @@ If the game does not progress in PPSSPP either, install PSP firmware
 - `PSPRECOMP_TOW1_GE_DISABLE_UNTIL_PRESENT=N` — skip GE list execution until
   `N`; faster still, but gameplay can stall on a black frame because list sync
   is discarded. Prefer the skip-raster variable.
+- `PSPRECOMP_TOW1_AUTO_GUILD=1` — scan each presented frame for the Ailily
+  town-map signature (pink selected-row bar over the blue coastal map); when
+  matched, the host holds Cross for 20 frames. This makes the Guild selection
+  deterministic **once the town menu is on screen**. It does not yet make the
+  shop-to-town-menu transition deterministic.
 - `PSPRECOMP_TOW1_FRAME_DIAG=1`
 - `PSPRECOMP_TOW1_FRAME_DUMP=...`
 - `PSPRECOMP_EXTRA_FUNCTIONS=0x...` (generator extra entry seeds)

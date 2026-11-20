@@ -34,6 +34,7 @@ constexpr std::uint32_t kPresentMessage = WM_APP + 1u;
 std::atomic<bool> g_enabled{true};
 std::atomic<bool> g_close_requested{false};
 std::atomic<std::uint32_t> g_buttons{0u};
+std::atomic<std::uint32_t> g_auto_cross_until{0u};
 std::mutex g_mutex;
 std::condition_variable g_ready;
 std::vector<std::uint32_t> g_frame;
@@ -245,6 +246,34 @@ void window_start() {
 #endif
 }
 
+bool looks_like_town_menu(const std::vector<std::uint32_t> &frame) {
+    if (frame.size() != static_cast<std::size_t>(kWidth) * kHeight) return false;
+    unsigned pink = 0u;
+    unsigned blue = 0u;
+    // The Ailily town screen has a pink selected-row bar at the top-left and
+    // the blue sea/sky illustration to its right.  Shop menus use the brown
+    // counter background instead, so this signature is specific to the map.
+    for (std::uint32_t y = 0u; y < 48u; ++y) {
+        for (std::uint32_t x = 0u; x < 160u; ++x) {
+            const std::uint32_t p = frame[static_cast<std::size_t>(y) * kWidth + x];
+            const unsigned r = (p >> 16u) & 0xFFu;
+            const unsigned g = (p >> 8u) & 0xFFu;
+            const unsigned b = p & 0xFFu;
+            if (r > 180u && g < 185u && b > 105u && r > g + 20u && b > g) ++pink;
+        }
+    }
+    for (std::uint32_t y = 55u; y < 155u; ++y) {
+        for (std::uint32_t x = 150u; x < 360u; ++x) {
+            const std::uint32_t p = frame[static_cast<std::size_t>(y) * kWidth + x];
+            const unsigned r = (p >> 16u) & 0xFFu;
+            const unsigned g = (p >> 8u) & 0xFFu;
+            const unsigned b = p & 0xFFu;
+            if (b > 110u && b > r + 15u && g > 65u) ++blue;
+        }
+    }
+    return pink >= 40u && blue >= 1500u;
+}
+
 void window_present(const psprecomp::GuestMemory &memory, std::uint32_t address,
                     std::uint32_t stride, std::uint32_t format) {
     if (address == 0u || stride == 0u) return;
@@ -259,6 +288,13 @@ void window_present(const psprecomp::GuestMemory &memory, std::uint32_t address,
             frame[static_cast<std::size_t>(y) * kWidth + x] =
                 load_pixel(memory, row + x * bytes_per_pixel, format);
         }
+    }
+
+    if (std::getenv("PSPRECOMP_TOW1_AUTO_GUILD") != nullptr &&
+        looks_like_town_menu(frame)) {
+        g_auto_cross_until.store(g_present_count + 20u);
+        std::cerr << "[tow1-frame] town menu detected at present="
+                  << g_present_count << "; auto-confirm Guild\n";
     }
 
     if (std::getenv("PSPRECOMP_TOW1_FRAME_DIAG") != nullptr) {
@@ -430,6 +466,7 @@ void window_shutdown() {
 
 std::uint32_t window_buttons() {
     std::uint32_t buttons = g_buttons.load();
+    if (g_present_count < g_auto_cross_until.load()) buttons |= 0x4000u;
     for (const ScheduledInput &input : g_scheduled_inputs) {
         if (g_present_count >= input.start && g_present_count < input.end)
             buttons |= input.mask;
