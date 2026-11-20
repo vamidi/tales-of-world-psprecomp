@@ -593,6 +593,12 @@ switch tasks; the manager needs a proper task push/request. This is the
 remaining town-transition mechanism. PPSSPP was reset afterward to restore a
 clean opening state.
 
+A direct MIPS scan of the code segment found **no** absolute or `gp`-relative
+reference to `0x08D42238`, `0x08D422A8`, or the task table. The consumer is
+reached through an indirect/global pointer. The next useful diagnostic is a
+native guest-memory write watch on `0x08D422A8..0x08D422B4`, logging the
+current dispatch PC; that will name the task push/request function.
+
 The native exploration runs are headless (`PSPRECOMP_TOW1_NO_WINDOW=1`):
 there is intentionally no visible `Tow1Native` window, and each captured PPM
 comes directly from `window_present`. Remove `NO_WINDOW` to watch it live.
