@@ -508,6 +508,10 @@ The full import/HLE matrix and milestone order live in
    `shop_stairs.ppm.51500.png`; the current R/Quit/stairs script is
    frame-sensitive, so first make the cursor selection stable (or use a visible
    manual run).
+   - Ghidra lead: the town-menu class string is `9cMenuTown` at
+     `0x08C19820`; constructors `FUN_08a6704c` and `FUN_08a67234` set vtable
+     `0x417870`. Find the update/input method and either hook the open path or
+     add a host-side diagnostic that selects the `Guild` entry deterministically.
 2. Re-check `cSoundManager`: it should resume at `0x08B1CE44` once the title
    frame loop runs; silent SAS is still acceptable until audio is required.
 3. Compare native frames with PPSSPP during the movie/title transition.
@@ -551,13 +555,12 @@ Remote debugger is enabled (`RemoteDebuggerOnStartup = True`) and listens on
 `ws://127.0.0.1:52814/debugger`.
 
 PPSSPP MCP (`mcp-ppsspp` 0.2.0) exposes no savestate save/load call; its
-documented substitute is PPSSPP's own hotkeys/UI. On 2026-11-18 the running
-PPSSPP instance had switched to **Radiant Mythology 2** (`ULJS00175` v1.01),
-not this profile's **Radiant Mythology** (`ULES00837`). A ToW1 town-map state
-therefore cannot be loaded into it. Load `ULES00837` before capturing the
-PPSSPP town map. The MCP screenshot call still returns
-`Could not download output`; a Windows `PrintWindow` capture works, but it
-can show the last rendered frame even when the window is black or covered.
+documented substitute is PPSSPP's own hotkeys/UI. On 2026-11-20 the instance
+is back on the correct **Radiant Mythology** (`ULES00837` v1.00), but it is
+currently in a dungeon scene, not Ailily, and no `.ppst` town state exists.
+The MCP screenshot call still returns `Could not download output`; a Windows
+`PrintWindow` capture works, but it can show the last rendered frame even when
+the window is black or covered.
 
 The native exploration runs are headless (`PSPRECOMP_TOW1_NO_WINDOW=1`):
 there is intentionally no visible `Tow1Native` window, and each captured PPM
