@@ -535,6 +535,44 @@ void scene_caller_hook(psprecomp::Runtime &runtime,
             break;
         }
     }
+    static const int trace_uid = [] {
+        const char *text = std::getenv("PSPRECOMP_TOW2_TRACE_UID");
+        if (text == nullptr || *text == '\0') return -1;
+        return std::atoi(text);
+    }();
+    static const std::uint64_t trace_uid_from_us = [] {
+        const char *text = std::getenv("PSPRECOMP_TOW2_TRACE_UID");
+        if (text == nullptr) return std::uint64_t{0u};
+        const char *colon = std::strchr(text, ':');
+        if (colon == nullptr) return std::uint64_t{0u};
+        return static_cast<std::uint64_t>(std::strtoull(colon + 1, nullptr, 0));
+    }();
+    static const std::uint64_t trace_uid_count = [] {
+        const char *text = std::getenv("PSPRECOMP_TOW2_TRACE_UID");
+        if (text == nullptr) return std::uint64_t{0u};
+        const char *first = std::strchr(text, ':');
+        if (first == nullptr) return std::uint64_t{0u};
+        const char *second = std::strchr(first + 1, ':');
+        if (second == nullptr) return std::uint64_t{200u};
+        return static_cast<std::uint64_t>(std::strtoull(second + 1, nullptr, 0));
+    }();
+    if (trace_uid >= 0 && thread_uid == trace_uid &&
+        g_scheduler.now_us >= trace_uid_from_us) {
+        static std::uint64_t logged = 0u;
+        if (logged++ < trace_uid_count) {
+            std::uint32_t pad = 0u;
+            if (runtime.memory().contains(0x08D4F6D0u, 4u))
+                pad = runtime.memory().load32(0x08D4F6D0u);
+            std::cerr << "[tow2-uid] pc=" << psprecomp::hex32(dispatch_pc)
+                      << " uid=" << thread_uid
+                      << " ra=" << psprecomp::hex32(ctx.gpr[31])
+                      << " a0=" << psprecomp::hex32(ctx.gpr[4])
+                      << " a1=" << psprecomp::hex32(ctx.gpr[5])
+                      << " a2=" << psprecomp::hex32(ctx.gpr[6])
+                      << " a3=" << psprecomp::hex32(ctx.gpr[7])
+                      << " pad=" << psprecomp::hex32(pad) << "\n";
+        }
+    }
     static const bool scene_trace =
         std::getenv("PSPRECOMP_TOW2_SCENE_TRACE") != nullptr;
     if (scene_trace) {
@@ -989,9 +1027,45 @@ void scene_caller_hook(psprecomp::Runtime &runtime,
 }
 
 void scene_watch_hook(psprecomp::Runtime &runtime,
-                      psprecomp::AllegrexContext &,
+                      psprecomp::AllegrexContext &ctx,
                       std::uint32_t dispatch_pc,
                       std::int32_t thread_uid) {
+    static const std::vector<std::uint32_t> trace_ret = [] {
+        std::vector<std::uint32_t> targets;
+        const char *text = std::getenv("PSPRECOMP_TOW2_TRACE_RET");
+        if (text == nullptr || *text == '\0') return targets;
+        const char *cursor = text;
+        while (*cursor != '\0') {
+            while (*cursor == ',' || *cursor == ' ' || *cursor == '\n')
+                ++cursor;
+            if (*cursor == '\0') break;
+            char *end = nullptr;
+            const unsigned long value = std::strtoul(cursor, &end, 0);
+            if (end == cursor) break;
+            targets.push_back(static_cast<std::uint32_t>(value));
+            cursor = end;
+        }
+        return targets;
+    }();
+    static const std::uint64_t trace_ret_from_us = [] {
+        if (const char *text = std::getenv("PSPRECOMP_TOW2_TRACE_RET_FROM_US"))
+            return static_cast<std::uint64_t>(std::strtoull(text, nullptr, 0));
+        return std::uint64_t{0u};
+    }();
+    if (!trace_ret.empty() && g_scheduler.now_us >= trace_ret_from_us) {
+        const std::uint32_t value = ctx.gpr[2];
+        for (const std::uint32_t target : trace_ret) {
+            if (value != target) continue;
+            static std::uint64_t logged = 0u;
+            if (logged++ < 400u) {
+                std::cerr << "[tow2-ret] pc=" << psprecomp::hex32(dispatch_pc)
+                          << " uid=" << thread_uid
+                          << " v0=" << psprecomp::hex32(value)
+                          << " ra=" << psprecomp::hex32(ctx.gpr[31]) << "\n";
+            }
+            break;
+        }
+    }
     const std::uint32_t scene =
         runtime.memory().contains(0x08D14F2Cu, 4u)
             ? runtime.memory().load32(0x08D14F2Cu) : 0u;
@@ -1007,6 +1081,49 @@ void scene_watch_hook(psprecomp::Runtime &runtime,
                   << " uid=" << thread_uid << "\n";
         g_scene_watch_address = scene;
         g_scene_watch_value = value;
+    }
+}
+
+// Post-chained-call variant of TRACE_RET: catches getters reached through
+// invoke_chained_call(), which the outer dispatch hooks do not observe.
+void chained_call_return_hook(psprecomp::Runtime &,
+                              psprecomp::AllegrexContext &ctx,
+                              std::uint32_t target_pc,
+                              std::uint32_t native_depth) {
+    static const std::vector<std::uint32_t> trace_ret = [] {
+        std::vector<std::uint32_t> targets;
+        const char *text = std::getenv("PSPRECOMP_TOW2_TRACE_RET");
+        if (text == nullptr || *text == '\0') return targets;
+        const char *cursor = text;
+        while (*cursor != '\0') {
+            while (*cursor == ',' || *cursor == ' ' || *cursor == '\n')
+                ++cursor;
+            if (*cursor == '\0') break;
+            char *end = nullptr;
+            const unsigned long value = std::strtoul(cursor, &end, 0);
+            if (end == cursor) break;
+            targets.push_back(static_cast<std::uint32_t>(value));
+            cursor = end;
+        }
+        return targets;
+    }();
+    static const std::uint64_t from_us = [] {
+        if (const char *text = std::getenv("PSPRECOMP_TOW2_TRACE_RET_FROM_US"))
+            return static_cast<std::uint64_t>(std::strtoull(text, nullptr, 0));
+        return std::uint64_t{0u};
+    }();
+    if (trace_ret.empty() || g_scheduler.now_us < from_us) return;
+    const std::uint32_t value = ctx.gpr[2];
+    for (const std::uint32_t target : trace_ret) {
+        if (value != target) continue;
+        static std::uint64_t logged = 0u;
+        if (logged++ < 400u) {
+            std::cerr << "[tow2-chain-ret] pc=" << psprecomp::hex32(target_pc)
+                      << " depth=" << native_depth
+                      << " v0=" << psprecomp::hex32(value)
+                      << " ra=" << psprecomp::hex32(ctx.gpr[31]) << "\n";
+        }
+        break;
     }
 }
 
@@ -4370,12 +4487,17 @@ void register_hle(psprecomp::Runtime &runtime, std::uint32_t user_arena_start) {
     g_mpeg_memory = &runtime.memory();
     if (std::getenv("PSPRECOMP_TOW2_SCENE_WATCH") != nullptr ||
         std::getenv("PSPRECOMP_TOW2_SCENE_TRACE") != nullptr ||
-        std::getenv("PSPRECOMP_TOW2_TRACE_PCS") != nullptr) {
+        std::getenv("PSPRECOMP_TOW2_TRACE_PCS") != nullptr ||
+        std::getenv("PSPRECOMP_TOW2_TRACE_RET") != nullptr ||
+        std::getenv("PSPRECOMP_TOW2_TRACE_UID") != nullptr) {
         psprecomp::set_runtime_pre_dispatch_hook(&scene_caller_hook);
         if (std::getenv("PSPRECOMP_TOW2_SCENE_WATCH") != nullptr ||
-            std::getenv("PSPRECOMP_TOW2_SCENE_TRACE") != nullptr)
+            std::getenv("PSPRECOMP_TOW2_SCENE_TRACE") != nullptr ||
+            std::getenv("PSPRECOMP_TOW2_TRACE_RET") != nullptr)
             psprecomp::set_runtime_post_dispatch_hook(&scene_watch_hook);
     }
+    if (std::getenv("PSPRECOMP_TOW2_TRACE_RET") != nullptr)
+        psprecomp::set_runtime_post_chained_call_hook(&chained_call_return_hook);
     if (std::getenv("PSPRECOMP_TOW2_TITLE_TRIGGER") != nullptr) {
         runtime.register_function(kTitleCreatorThread,
                                   &title_creator_thread_entry,

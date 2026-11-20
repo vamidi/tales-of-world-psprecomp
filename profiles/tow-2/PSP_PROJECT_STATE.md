@@ -847,28 +847,41 @@ Added present-time guest tracing in `tow2_hle.cpp`:
 - `PSPRECOMP_TOW2_DUMP_AT="t_us:address:length"` dumps a region once.
 - `PSPRECOMP_TOW2_TRACE_PCS="addr,..."` + `_FROM_US` logs dispatches to the
   listed guest PCs.
+- `PSPRECOMP_TOW2_TRACE_RET="value,..."` + `_FROM_US` logs functions that
+  return one of the listed values, on both the outer and chained call paths.
+- `PSPRECOMP_TOW2_TRACE_UID="uid:from_us[:count]"` logs a thread's dispatches
+  in order.
 
 Findings:
 
-- The input manager object is at `0x08D4F6B0`; its cached button word is
-  `[+0x20] = 0x08D4F6D0`. Pointers to the object are stored at
-  `0x08D4F694` and `0x08D4F8C0`; `0x08D4F690` is the enclosing singleton.
-- The pad reaches that word. With the class-grid script:
-  `0x40` (Down) at 12.05 s, `0x2040` (Down+Circle) at 13.06 s, `0x6040`
-  (Down+Circle+Cross) at 14.07 s. It is **never cleared**, so the consumer is
-  not running.
-- The input object's typeinfo/vtable pointer is `[+0x10] = 0x08C70E10`; its
-  menu methods are `0x08A6782C`, `0x08A6783C`, `0x08A67908`, `0x08A6A7FC`,
-  `0x08A6A4A0`, `0x08A6A854`, `0x08A6AA78`, `0x08A6AAF0`, `0x08A6A4A8`,
-  `0x08A6A8A0`, `0x08A6A524`, `0x08A6A534`.
-- `PSPRECOMP_TOW2_TRACE_PCS` after 10 s shows only `0x08A6A524` entered once
-  (uid 8, `a0=0x09F9BBD0`); the per-frame input pump `0x08A6A7FC` runs with
-  `a0=0x08D4F3D0` but does not consume the class-grid word. The other menu
-  methods are never entered.
-- Conclusion: this is **not** an input-delivery failure. The class-grid
-  handler/state machine is not scheduled after the grid appears. Next: find
-  the consumer of `0x08D4F6B0` (the singleton at `0x08D4F690` and the code
-  that loads `[+0x20]`) and why that path is not reached.
+- **Correction:** the object at `0x08D4F6B0` is a **cCamera**, not an input
+  manager. Its `[+0x10]` typeinfo is `0x08C70E10`, whose string is
+  `N3sys7cCamera`. `[+0x20] = 0x08D4F6D0` is a camera/debug control word that
+  mirrors the pad: Down `0x40` at 12.05 s, +Circle `0x2040` at 13.06 s,
+  +Cross `0x6040` at 14.07 s. It is not the class-grid selection state.
+- The only `sceCtrlReadBufferPositive` call sites are the title Start check
+  `0x08A63704` (buffer `0x08CB1EF0`) and the per-frame camera update
+  `0x08A7C484` (buffer `0x08D04638`). The camera update copies the pad to
+  `0x08D04624` and feeds `0x08A76610`; no UI code reads those globals
+  directly.
+- The pump `0x08A6A7FC` is `cRenderManager::update` (typeinfo
+  `0x08C70FB8`, string `N3sys14cRenderManager`). It walks a task list at
+  `manager+8` (`manager=0x08D4F3D0`, head `0x08D4F3D8`). The head is
+  initialised to self at frame 2 and **never changes**: the render-task list
+  is empty for the whole run, so the pump returns immediately.
+- `PSPRECOMP_TOW2_TRACE_PCS` after 10 s enters only `0x08A6A524` once; the
+  camera/vtable menu methods are not the class-grid consumer. A `TRACE_UID`
+  trace of uid 8 after the charmake open is dominated by sprite/render calls
+  (`0x08A5DD28`, `0x08A772DC`, `0x08A75EC4`, `0x08A5FCE8`) and never reaches
+  a class-grid UI constructor or input loop.
+- Thread state at the grid: `user_main` (uid 1) is running at the pump yield
+  `0x08A70420`, `ModuleDispatcher` (uid 8) is delayed, `FileReadingTask`
+  (uid 4) is delayed, and no charmake/input thread exists.
+- Conclusion: the class grid is showing the **background** while its UI/task
+  was never created. This is an asset/UI-setup gap, not an input-delivery
+  failure. Next: trace the `common/charmake_bk.arc` open caller and the
+  subsequent 2.8 MB raw EZBIND load to see why the charmake task is not
+  registered (and whether the parse completes).
 
 ## Title scene ordering (2026-11-17)
 Goal: start the title mount before `user_main` resumes, then observe
