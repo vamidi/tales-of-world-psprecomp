@@ -940,6 +940,23 @@ Findings:
 - Next frontier: `0x08A790F4` (title/actor update path) after the name
   entry; inspect the post-creation scene transition.
 
+### Font rendering (2026-11-20)
+
+- The character-creation panels rendered but every glyph was blank:
+  tow-2's `sceLibFont` HLE returned an 8x8 zeroed glyph and 8x8 metrics.
+- Ported tow-1's host font path: GDI `GetGlyphOutlineW` into a `HostGlyph`,
+  real `SceFontInfo`/`SceFontCharInfo` metrics (26.6 fixed point), and
+  `font_draw_glyph_to_image` for both 4-bit and 8-bit glyph buffers.
+- Fixed two host access violations in the GDI path: deselect the old
+  `HFONT` before `DeleteObject`, and reject zero-size glyph bitmaps.
+- Verified: frames 500/1000 show the full character-creation menu
+  ("Rotate Mode", "Sex Male", "Job: Swordsman", "Hair", "Eyes", "Mouth",
+  "Skin", "Victory P.", "Voice Type", "Randomize", "OK", "Set character
+  name") over the 3D preview. Captured to
+  `progress/frame_cre_font.png` (untracked).
+- Next: drive the menu cursor to `OK` (D-pad down, then confirm) and check
+  the post-creation field transition.
+
 ## Title scene ordering (2026-11-17)
 Goal: start the title mount before `user_main` resumes, then observe
 `TitleArchive/...` requests.

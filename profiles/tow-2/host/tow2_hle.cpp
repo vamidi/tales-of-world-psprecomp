@@ -13,6 +13,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -28,6 +29,16 @@
 #include <unordered_map>
 #include <utility>
 #include <vector>
+
+#if defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
 
 namespace psprecomp {
 // Defined by the renamed libfile.prx corpus.
@@ -3193,6 +3204,123 @@ constexpr std::uint32_t kFontLibHandle = 0x08801000u;
 constexpr std::uint32_t kFontHandle = 0x08801100u;
 constexpr std::uint32_t kFontGlyphScratch = 0x08800000u;
 
+int g_font_pixel_height = 16;
+
+struct HostGlyph {
+    int width = 0;
+    int height = 0;
+    int left = 0;
+    int top = 0;
+    int advance = 0;
+    std::vector<std::uint8_t> pixels;
+};
+
+#if defined(_WIN32)
+struct HostFontState {
+    HDC dc = nullptr;
+    HFONT font = nullptr;
+    int height = 0;
+};
+
+HostFontState g_host_font;
+
+void ensure_host_font(int pixel_height) {
+    if (g_host_font.dc == nullptr) g_host_font.dc = CreateCompatibleDC(nullptr);
+    if (g_host_font.font != nullptr && g_host_font.height == pixel_height) return;
+    if (g_host_font.font != nullptr) {
+        // Deselect before deleting: deleting a font still selected into the DC
+        // is undefined and crashes on some drivers.
+        SelectObject(g_host_font.dc, GetStockObject(SYSTEM_FONT));
+        DeleteObject(g_host_font.font);
+        g_host_font.font = nullptr;
+    }
+    LOGFONTW lf{};
+    lf.lfHeight = -pixel_height;
+    lf.lfWeight = FW_NORMAL;
+    lf.lfCharSet = DEFAULT_CHARSET;
+    lf.lfQuality = ANTIALIASED_QUALITY;
+    lf.lfPitchAndFamily = DEFAULT_PITCH | FF_DONTCARE;
+    wcscpy_s(lf.lfFaceName, L"Segoe UI");
+    g_host_font.font = CreateFontIndirectW(&lf);
+    if (g_host_font.font == nullptr) {
+        wcscpy_s(lf.lfFaceName, L"Arial");
+        g_host_font.font = CreateFontIndirectW(&lf);
+    }
+    g_host_font.height = pixel_height;
+    SelectObject(g_host_font.dc, g_host_font.font);
+}
+
+bool rasterize_host_glyph(unsigned int code, int pixel_height, HostGlyph &glyph) {
+    ensure_host_font(pixel_height);
+    if (g_host_font.dc == nullptr || g_host_font.font == nullptr) return false;
+    MAT2 mat{};
+    mat.eM11.value = 1;
+    mat.eM22.value = 1;
+    GLYPHMETRICS metrics{};
+    if (code > 0xFFFFu) code = '?';
+    DWORD size = GetGlyphOutlineW(g_host_font.dc, static_cast<UINT>(code),
+                                  GGO_BITMAP, &metrics, 0, nullptr, &mat);
+    if (size == GDI_ERROR) {
+        code = '?';
+        size = GetGlyphOutlineW(g_host_font.dc, static_cast<UINT>(code),
+                                GGO_BITMAP, &metrics, 0, nullptr, &mat);
+        if (size == GDI_ERROR) return false;
+    }
+    std::vector<std::uint8_t> raw(size);
+    if (size != 0u &&
+        GetGlyphOutlineW(g_host_font.dc, static_cast<UINT>(code), GGO_BITMAP,
+                         &metrics, size, raw.data(), &mat) == GDI_ERROR)
+        return false;
+    glyph.width = static_cast<int>(metrics.gmBlackBoxX);
+    glyph.height = static_cast<int>(metrics.gmBlackBoxY);
+    glyph.left = metrics.gmptGlyphOrigin.x;
+    glyph.top = metrics.gmptGlyphOrigin.y;
+    glyph.advance = metrics.gmCellIncX;
+    if (glyph.advance <= 0) glyph.advance = pixel_height / 2;
+    if (glyph.width <= 0 || glyph.height <= 0) {
+        glyph.width = glyph.height = 0;
+        return true;
+    }
+    const int stride = static_cast<int>(((glyph.width + 31) / 32) * 4);
+    if (size == 0u ||
+        raw.size() < static_cast<std::size_t>(stride) *
+                         static_cast<std::size_t>(glyph.height)) {
+        glyph.width = glyph.height = 0;
+        return true;
+    }
+    glyph.pixels.assign(static_cast<std::size_t>(glyph.width * glyph.height), 0u);
+    for (int y = 0; y < glyph.height; ++y) {
+        for (int x = 0; x < glyph.width; ++x) {
+            const std::uint8_t byte =
+                raw[static_cast<std::size_t>(y * stride + x / 8)];
+            const bool set = ((byte >> (7 - (x & 7))) & 1u) != 0u;
+            glyph.pixels[static_cast<std::size_t>(y * glyph.width + x)] =
+                set ? 0xFFu : 0x00u;
+        }
+    }
+    return true;
+}
+#else
+bool rasterize_host_glyph(unsigned int, int, HostGlyph &glyph) {
+    glyph.width = glyph.height = 0;
+    return false;
+}
+#endif
+
+float font_load_float(psprecomp::GuestMemory &memory, std::uint32_t address) {
+    const std::uint32_t bits = memory.load32(address);
+    float value = 0.0f;
+    std::memcpy(&value, &bits, sizeof(value));
+    return value;
+}
+
+void font_store_float(psprecomp::GuestMemory &memory, std::uint32_t address,
+                      float value) {
+    std::uint32_t bits = 0u;
+    std::memcpy(&bits, &value, sizeof(bits));
+    memory.store32(address, bits);
+}
+
 void font_new_lib(psprecomp::Runtime &runtime, psprecomp::AllegrexContext &ctx) {
     const std::uint32_t error_pointer = ctx.gpr[5];
     if (error_pointer != 0u && runtime.memory().contains(error_pointer, 4u)) {
@@ -3210,6 +3338,15 @@ void font_open(psprecomp::Runtime &runtime, psprecomp::AllegrexContext &ctx) {
 }
 
 void font_find_optimum(psprecomp::Runtime &runtime, psprecomp::AllegrexContext &ctx) {
+    const std::uint32_t style_pointer = ctx.gpr[5];
+    if (style_pointer != 0u && runtime.memory().contains(style_pointer, 8u)) {
+        const float style_height =
+            font_load_float(runtime.memory(), style_pointer + 4u);
+        if (style_height > 0.0f) {
+            g_font_pixel_height = std::clamp(
+                static_cast<int>(std::lround(style_height)), 6, 48);
+        }
+    }
     const std::uint32_t error_pointer = ctx.gpr[6];
     if (error_pointer != 0u && runtime.memory().contains(error_pointer, 4u)) {
         runtime.memory().store32(error_pointer, 0u);
@@ -3223,21 +3360,46 @@ void font_get_info(psprecomp::Runtime &runtime, psprecomp::AllegrexContext &ctx)
         ctx.set_gpr(2, 0x80000108u);
         return;
     }
+    const int pixel = std::clamp(g_font_pixel_height, 6, 48);
     runtime.memory().zero(info_pointer, 264u);
-    runtime.memory().store32(info_pointer + 0u, 8u);
-    runtime.memory().store32(info_pointer + 4u, 8u);
-    runtime.memory().store32(info_pointer + 8u, 8u);
+    runtime.memory().store32(info_pointer + 0u, static_cast<std::uint32_t>(pixel));
+    runtime.memory().store32(info_pointer + 4u, static_cast<std::uint32_t>(pixel));
+    runtime.memory().store32(info_pointer + 8u, static_cast<std::uint32_t>(pixel));
     runtime.memory().store32(info_pointer + 12u, 0u);
-    runtime.memory().store32(info_pointer + 16u, 0x08000000u);
-    runtime.memory().store32(info_pointer + 20u, 0x08000000u);
-    runtime.memory().store32(info_pointer + 24u, 0x08000000u);
-    runtime.memory().store32(info_pointer + 28u, 0x08000000u);
-    runtime.memory().store32(info_pointer + 32u, 0u);
-    runtime.memory().store32(info_pointer + 36u, 0u);
-    runtime.memory().store32(info_pointer + 80u, 8u);
-    runtime.memory().store32(info_pointer + 84u, 8u);
-    runtime.memory().store32(info_pointer + 88u, 0x10000u);
-    runtime.memory().store32(info_pointer + 92u, 0u);
+    runtime.memory().store32(info_pointer + 16u,
+                             static_cast<std::uint32_t>(pixel) << 24u);
+    runtime.memory().store32(info_pointer + 20u, 0u);
+    runtime.memory().store32(info_pointer + 24u, 0u);
+    runtime.memory().store32(info_pointer + 28u,
+                             static_cast<std::uint32_t>(pixel) << 24u);
+    font_store_float(runtime.memory(), info_pointer + 40u,
+                     static_cast<float>(pixel));
+    font_store_float(runtime.memory(), info_pointer + 44u,
+                     static_cast<float>(pixel));
+    font_store_float(runtime.memory(), info_pointer + 48u,
+                     static_cast<float>(pixel));
+    font_store_float(runtime.memory(), info_pointer + 52u, 0.0f);
+    font_store_float(runtime.memory(), info_pointer + 56u,
+                     static_cast<float>(pixel) * 0.5f);
+    font_store_float(runtime.memory(), info_pointer + 60u, 0.0f);
+    font_store_float(runtime.memory(), info_pointer + 64u, 0.0f);
+    font_store_float(runtime.memory(), info_pointer + 68u,
+                     static_cast<float>(pixel));
+    font_store_float(runtime.memory(), info_pointer + 72u, 0.0f);
+    font_store_float(runtime.memory(), info_pointer + 76u, 0.0f);
+    runtime.memory().store16(info_pointer + 80u,
+                             static_cast<std::uint16_t>(pixel));
+    runtime.memory().store16(info_pointer + 82u,
+                             static_cast<std::uint16_t>(pixel));
+    runtime.memory().store32(info_pointer + 84u, 0x10000u);
+    runtime.memory().store32(info_pointer + 88u, 0u);
+    font_store_float(runtime.memory(), info_pointer + 92u,
+                     static_cast<float>(pixel));
+    font_store_float(runtime.memory(), info_pointer + 96u,
+                     static_cast<float>(pixel));
+    runtime.memory().store16(info_pointer + 112u, 0u);
+    runtime.memory().store16(info_pointer + 114u, 1u);
+    runtime.memory().store16(info_pointer + 118u, 2u);
     runtime.memory().store8(info_pointer + 260u, 8u);
     ctx.set_gpr(2, 0u);
 }
@@ -3248,16 +3410,101 @@ void font_get_char_info(psprecomp::Runtime &runtime, psprecomp::AllegrexContext 
         ctx.set_gpr(2, 0x80000108u);
         return;
     }
+    HostGlyph glyph;
+    rasterize_host_glyph(ctx.gpr[5] & 0xFFFFu, g_font_pixel_height, glyph);
     runtime.memory().zero(info_pointer, 60u);
-    runtime.memory().store32(info_pointer + 0u, 8u);
-    runtime.memory().store32(info_pointer + 4u, 8u);
-    runtime.memory().store32(info_pointer + 8u, 0u);
-    runtime.memory().store32(info_pointer + 12u, 0u);
-    runtime.memory().store32(info_pointer + 16u, 8u);
-    runtime.memory().store32(info_pointer + 20u, 8u);
-    runtime.memory().store32(info_pointer + 24u, 8u);
-    runtime.memory().store32(info_pointer + 28u, 0u);
+    const std::uint32_t width = static_cast<std::uint32_t>(
+        glyph.width > 0 ? glyph.width : glyph.advance);
+    const std::uint32_t height = static_cast<std::uint32_t>(glyph.height);
+    runtime.memory().store32(info_pointer + 0u, width);
+    runtime.memory().store32(info_pointer + 4u, height);
+    runtime.memory().store32(info_pointer + 8u,
+                             static_cast<std::uint32_t>(glyph.left));
+    runtime.memory().store32(info_pointer + 12u,
+                             static_cast<std::uint32_t>(glyph.top));
+    runtime.memory().store32(info_pointer + 16u,
+                             static_cast<std::uint32_t>(glyph.advance) << 6u);
+    runtime.memory().store32(info_pointer + 20u,
+                             static_cast<std::uint32_t>(g_font_pixel_height) << 6u);
+    runtime.memory().store32(info_pointer + 24u,
+                             static_cast<std::uint32_t>(glyph.top) << 6u);
+    runtime.memory().store32(
+        info_pointer + 28u,
+        static_cast<std::uint32_t>(glyph.top - glyph.height) << 6u);
+    runtime.memory().store32(info_pointer + 32u,
+                             static_cast<std::uint32_t>(glyph.left) << 6u);
+    runtime.memory().store32(info_pointer + 36u,
+                             static_cast<std::uint32_t>(glyph.top) << 6u);
+    runtime.memory().store32(info_pointer + 40u,
+                             static_cast<std::uint32_t>(glyph.left) << 6u);
+    runtime.memory().store32(info_pointer + 44u,
+                             static_cast<std::uint32_t>(glyph.top) << 6u);
+    runtime.memory().store32(info_pointer + 48u,
+                             static_cast<std::uint32_t>(glyph.advance) << 6u);
+    runtime.memory().store32(info_pointer + 52u, 0u);
     ctx.set_gpr(2, 0u);
+}
+
+void font_draw_glyph_to_image(psprecomp::GuestMemory &memory,
+                              std::uint32_t image_pointer,
+                              const HostGlyph &glyph) {
+    if (glyph.width <= 0 || glyph.height <= 0) return;
+    const std::uint32_t format = memory.load32(image_pointer + 0u);
+    if (format != 0u && format != 2u) return;
+    const std::int32_t x_fixed = static_cast<std::int32_t>(
+        memory.load32(image_pointer + 4u));
+    const std::int32_t y_fixed = static_cast<std::int32_t>(
+        memory.load32(image_pointer + 8u));
+    const int origin_x = x_fixed >> 6;
+    const int origin_y = y_fixed >> 6;
+    const int x_fraction = x_fixed & 0x3F;
+    const std::uint32_t buffer_width = memory.load16(image_pointer + 12u);
+    const std::uint32_t buffer_height = memory.load16(image_pointer + 14u);
+    const std::uint32_t bytes_per_line = memory.load16(image_pointer + 16u);
+    const std::uint32_t base = memory.load32(image_pointer + 20u);
+    if (base == 0u || bytes_per_line == 0u) return;
+
+    auto sample = [&](int x, int y) -> int {
+        if (x < 0 || y < 0 || x >= glyph.width || y >= glyph.height) return 0;
+        const std::uint8_t value =
+            glyph.pixels[static_cast<std::size_t>(y * glyph.width + x)];
+        return format == 0u ? (value >> 4) : value;
+    };
+
+    for (int y = 0; y < glyph.height; ++y) {
+        for (int x = 0; x < glyph.width; ++x) {
+            const int a = sample(x - 1, y);
+            const int b = sample(x, y);
+            const int blended = (a * x_fraction) / 64 +
+                                (b * (64 - x_fraction) + 63) / 64;
+            if (blended == 0) continue;
+            const int dest_x = origin_x + x;
+            const int dest_y = origin_y + y;
+            if (dest_x < 0 || dest_y < 0 ||
+                dest_x >= static_cast<int>(buffer_width) ||
+                dest_y >= static_cast<int>(buffer_height))
+                continue;
+            if (format == 0u) {
+                const std::uint32_t address =
+                    base + static_cast<std::uint32_t>(dest_y) * bytes_per_line +
+                    static_cast<std::uint32_t>(dest_x / 2);
+                const int shift = ((dest_x & 1) != 0) ? 4 : 0;
+                const std::uint8_t old_value = memory.load8(address);
+                const int old_pixel = (old_value >> shift) & 0x0F;
+                const int new_pixel = std::min(old_pixel + blended, 15);
+                const std::uint8_t new_value = static_cast<std::uint8_t>(
+                    (old_value & ~(0x0F << shift)) | (new_pixel << shift));
+                memory.store8(address, new_value);
+            } else {
+                const std::uint32_t address =
+                    base + static_cast<std::uint32_t>(dest_y) * bytes_per_line +
+                    static_cast<std::uint32_t>(dest_x);
+                const int old_pixel = memory.load8(address);
+                const int new_pixel = std::min(old_pixel + blended, 255);
+                memory.store8(address, static_cast<std::uint8_t>(new_pixel));
+            }
+        }
+    }
 }
 
 void font_get_glyph(psprecomp::Runtime &runtime, psprecomp::AllegrexContext &ctx) {
@@ -3266,12 +3513,28 @@ void font_get_glyph(psprecomp::Runtime &runtime, psprecomp::AllegrexContext &ctx
         ctx.set_gpr(2, 0x80000108u);
         return;
     }
-    runtime.memory().zero(kFontGlyphScratch, 64u);
-    runtime.memory().zero(image_pointer, 24u);
-    runtime.memory().store32(image_pointer + 0u, 2u);
-    runtime.memory().store32(image_pointer + 12u, 0x00080008u);
-    runtime.memory().store16(image_pointer + 16u, 8u);
-    runtime.memory().store32(image_pointer + 20u, kFontGlyphScratch);
+    HostGlyph glyph;
+    rasterize_host_glyph(ctx.gpr[5] & 0xFFFFu, g_font_pixel_height, glyph);
+    if (std::getenv("PSPRECOMP_TOW2_LIBFONT_DIAG") != nullptr) {
+        static std::uint32_t logged = 0u;
+        if (logged++ < 16u) {
+            std::size_t ink = 0u;
+            for (const std::uint8_t pixel : glyph.pixels)
+                ink += pixel != 0u ? 1u : 0u;
+            std::cerr << "[tow2-font] glyph char="
+                      << psprecomp::hex32(ctx.gpr[5])
+                      << " size=" << glyph.width << 'x' << glyph.height
+                      << " ink=" << ink
+                      << " fmt=" << runtime.memory().load32(image_pointer)
+                      << " w=" << runtime.memory().load16(image_pointer + 12u)
+                      << " h=" << runtime.memory().load16(image_pointer + 14u)
+                      << " bpl=" << runtime.memory().load16(image_pointer + 16u)
+                      << " data=" << psprecomp::hex32(
+                             runtime.memory().load32(image_pointer + 20u))
+                      << "\n";
+        }
+    }
+    font_draw_glyph_to_image(runtime.memory(), image_pointer, glyph);
     ctx.set_gpr(2, 0u);
 }
 
@@ -3281,8 +3544,14 @@ void font_get_char_image_rect(psprecomp::Runtime &runtime, psprecomp::AllegrexCo
         ctx.set_gpr(2, 0x80000108u);
         return;
     }
-    runtime.memory().store16(rect + 0u, 8u); // width
-    runtime.memory().store16(rect + 2u, 8u); // height
+    HostGlyph glyph;
+    rasterize_host_glyph(ctx.gpr[5] & 0xFFFFu, g_font_pixel_height, glyph);
+    runtime.memory().store16(rect + 0u,
+                             static_cast<std::uint16_t>(
+                                 std::clamp(glyph.width, 0, 64)));
+    runtime.memory().store16(rect + 2u,
+                             static_cast<std::uint16_t>(
+                                 std::clamp(glyph.height, 0, 64)));
     ctx.set_gpr(2, 0u);
 }
 
