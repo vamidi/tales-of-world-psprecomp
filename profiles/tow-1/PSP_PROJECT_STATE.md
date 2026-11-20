@@ -511,10 +511,14 @@ The full import/HLE matrix and milestone order live in
    - Ghidra trace: the town-menu class string is `9cMenuTown` at
      `0x08C19820`. Menu-page constructors `FUN_08a6704c`/`FUN_08a67234` set
      vtable `0x08C1B870`; `FUN_08a6771c`/`FUN_08a68260` set page vtables
-     `0x08C1B9D0`/`0x08C1BCE0`. The vtable slots at `+0x...` dispatch through
-     generic menu/tree helpers. `PSPRECOMP_TOW1_AUTO_GUILD=1` now detects the
-     town-map pixels and presses Cross, so the remaining target is the
-     **open-transition** function, not the Guild cursor.
+     `0x08C1B9D0`/`0x08C1BCE0`.
+   - The actual town-menu main loop is `FUN_08a55858`: it updates the selected
+     page, returns the selected index on **Circle**, and forces index 7
+     (**Exit town**) on **Cross**. Its caller is `FUN_088274b8`, launched by
+     mode entry `FUN_08828570`; that is the open-transition path to target.
+   - `PSPRECOMP_TOW1_AUTO_GUILD=1` now detects the town-map pixels and pulses
+     Circle, so the remaining target is the **open-transition** function, not
+     the Guild cursor.
 2. Re-check `cSoundManager`: it should resume at `0x08B1CE44` once the title
    frame loop runs; silent SAS is still acceptable until audio is required.
 3. Compare native frames with PPSSPP during the movie/title transition.
@@ -601,9 +605,12 @@ If the game does not progress in PPSSPP either, install PSP firmware
   `N`; faster still, but gameplay can stall on a black frame because list sync
   is discarded. Prefer the skip-raster variable.
 - `PSPRECOMP_TOW1_AUTO_GUILD=1` — scan each presented frame for the Ailily
-  town-map signature (pink selected-row bar over the blue coastal map); when
-  matched, the host holds Cross for 20 frames. This makes the Guild selection
-  deterministic **once the town menu is on screen**. It does not yet make the
+  town-map signature (white left list + pink selected row + blue coastal map);
+  when matched, the host pulses Circle for 5 frames with a 30-frame re-arm gap.
+  **Circle** is the correct confirmation here: the traced main loop
+  `FUN_08a55858` returns the selected index on Circle, while Cross forces the
+  index to 7 (**Exit town**). This makes the Guild selection deterministic
+  **once the town menu is on screen**; it does not yet make the
   shop-to-town-menu transition deterministic.
 - `PSPRECOMP_TOW1_FRAME_DIAG=1`
 - `PSPRECOMP_TOW1_FRAME_DUMP=...`

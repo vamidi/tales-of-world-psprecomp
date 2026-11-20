@@ -35,6 +35,7 @@ std::atomic<bool> g_enabled{true};
 std::atomic<bool> g_close_requested{false};
 std::atomic<std::uint32_t> g_buttons{0u};
 std::atomic<std::uint32_t> g_auto_cross_until{0u};
+std::atomic<std::uint32_t> g_auto_last_trigger{0u};
 std::mutex g_mutex;
 std::condition_variable g_ready;
 std::vector<std::uint32_t> g_frame;
@@ -250,16 +251,19 @@ bool looks_like_town_menu(const std::vector<std::uint32_t> &frame) {
     if (frame.size() != static_cast<std::size_t>(kWidth) * kHeight) return false;
     unsigned pink = 0u;
     unsigned blue = 0u;
-    // The Ailily town screen has a pink selected-row bar at the top-left and
-    // the blue sea/sky illustration to its right.  Shop menus use the brown
-    // counter background instead, so this signature is specific to the map.
-    for (std::uint32_t y = 0u; y < 48u; ++y) {
-        for (std::uint32_t x = 0u; x < 160u; ++x) {
+    unsigned white = 0u;
+    // The Ailily town screen has a white list panel on the left, a pink
+    // selected-row bar, and the blue sea/sky illustration to its right.
+    // Requiring all three rejects the plaza's pink carpet and blue sky.
+    for (std::uint32_t y = 0u; y < 220u; ++y) {
+        for (std::uint32_t x = 0u; x < 170u; ++x) {
             const std::uint32_t p = frame[static_cast<std::size_t>(y) * kWidth + x];
             const unsigned r = (p >> 16u) & 0xFFu;
             const unsigned g = (p >> 8u) & 0xFFu;
             const unsigned b = p & 0xFFu;
-            if (r > 180u && g < 185u && b > 105u && r > g + 20u && b > g) ++pink;
+            if (r > 180u && g > 180u && b > 180u) ++white;
+            if (y < 48u && r > 180u && g < 185u && b > 105u &&
+                r > g + 20u && b > g) ++pink;
         }
     }
     for (std::uint32_t y = 55u; y < 155u; ++y) {
@@ -271,7 +275,7 @@ bool looks_like_town_menu(const std::vector<std::uint32_t> &frame) {
             if (b > 110u && b > r + 15u && g > 65u) ++blue;
         }
     }
-    return pink >= 40u && blue >= 1500u;
+    return white >= 1800u && pink >= 40u && blue >= 1500u;
 }
 
 void window_present(const psprecomp::GuestMemory &memory, std::uint32_t address,
@@ -291,10 +295,12 @@ void window_present(const psprecomp::GuestMemory &memory, std::uint32_t address,
     }
 
     if (std::getenv("PSPRECOMP_TOW1_AUTO_GUILD") != nullptr &&
-        looks_like_town_menu(frame)) {
-        g_auto_cross_until.store(g_present_count + 20u);
+        looks_like_town_menu(frame) &&
+        g_present_count >= g_auto_last_trigger.load() + 30u) {
+        g_auto_last_trigger.store(g_present_count);
+        g_auto_cross_until.store(g_present_count + 5u);
         std::cerr << "[tow1-frame] town menu detected at present="
-                  << g_present_count << "; auto-confirm Guild\n";
+                  << g_present_count << "; auto-confirm Guild (Circle)\n";
     }
 
     if (std::getenv("PSPRECOMP_TOW1_FRAME_DIAG") != nullptr) {
@@ -466,7 +472,7 @@ void window_shutdown() {
 
 std::uint32_t window_buttons() {
     std::uint32_t buttons = g_buttons.load();
-    if (g_present_count < g_auto_cross_until.load()) buttons |= 0x4000u;
+    if (g_present_count < g_auto_cross_until.load()) buttons |= 0x2000u;
     for (const ScheduledInput &input : g_scheduled_inputs) {
         if (g_present_count >= input.start && g_present_count < input.end)
             buttons |= input.mask;
