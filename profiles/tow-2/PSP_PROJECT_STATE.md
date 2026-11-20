@@ -879,9 +879,41 @@ Findings:
   (uid 4) is delayed, and no charmake/input thread exists.
 - Conclusion: the class grid is showing the **background** while its UI/task
   was never created. This is an asset/UI-setup gap, not an input-delivery
-  failure. Next: trace the `common/charmake_bk.arc` open caller and the
-  subsequent 2.8 MB raw EZBIND load to see why the charmake task is not
-  registered (and whether the parse completes).
+  failure.
+
+### Charmake setup blocks on load completion (2026-11-20)
+
+- The charmake scene setup is `0x08A27E98` (unit 0273). It runs at
+  10.483673 s; its caller return is `0x08A4D2A0`. It opens
+  `system/menuback.ppt`, `system/common.eai` and
+  `common/charmake_bk.arc`, then continues through `0x08A25004`,
+  `0x08A20184` and `0x08A1F2B8` (10.567-10.572 s).
+- `common/charmake_bk.arc` is a 2,818,048-byte raw UMD read at
+  10.667186 s, issued by uid 4 (`FileReadingTask`, caller `0x08A5A40C`).
+- `0x08A1F2B8` opens its asset via `0x08A599C0` (returns the VFS manager
+  `0x08D4F120`) and then calls `0x089FB424`.
+- `0x089FB424` is a **completion wait loop**: it tags the object field at
+  `[this+3168]` (object `0x09FA3190`, field `0x09FA3DF0`) with the loading
+  bit, then pumps (`0x08A703D8`) until that bit clears.
+- Watch trace: `0x08DA1200 -> 0x08DA1201` at 10.900748 s and **no clear**
+  afterwards. The setup never returns to `0x08A1F388`, so the post-loop UI
+  creation (`0x08A582B4`, `0x08A4D334`, `0x08A02210`) never runs.
+- Root cause: the charmake load's completion callback never clears the
+  loading bit. Next target: trace the async completion path for this read
+  (the file worker's signal at `0x08A59878`/`0x08A598DC` and the callback
+  that should clear `0x09FA3DF0`) and make it fire.
+- New diagnostics used:
+  - `PSPRECOMP_TOW2_TRACE_RA="ra,..."` logs dispatches whose caller return
+    address matches.
+  - `PSPRECOMP_TOW2_TRACE_CHAIN_FROM="start:end"` logs chained calls made
+    from a return-address range (requires `PSPRECOMP_NO_CHAIN=1` or a
+    poisoned unit, because the production direct-chain fast path bypasses
+    the chained hooks).
+  - `PSPRECOMP_TOW2_CHARMAKE_WAIT_TRACE=1` overrides the charmake wait/open
+    helpers (`0x08A703D8`, `0x08A6FEC0`, `0x08A4ADF8`, `0x08A599C0`) to log
+    entry/return.
+  - `[tow2-open]` and the raw-archive log now include `t_us`, `caller`/`ra`
+    and `uid`.
 
 ## Title scene ordering (2026-11-17)
 Goal: start the title mount before `user_main` resumes, then observe
