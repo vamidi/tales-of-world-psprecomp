@@ -824,14 +824,51 @@ bring-up.
     button mask and return address.
 - Next stall: the class grid is static under Start, Cross, Down and analog
   input. PPSSPP delivers the same Cross press (pad state `0x08D0463C` reads
-  `0x4000`) and its class grid does not visibly change either; the PPSSPP
-  comparison uses a Vulkan `PrintWindow` capture, so treat that visual as weak
-  evidence. This is not simply a missing button mapping. The charmake archive
-  load is a raw 2.8 MB EZBIND read (`start=301858816`, buffer `0x09A96700`);
-  its name-table layout is not title.arc's, so the existing `+0x160`
-  diagnostic prints garbage for it. Next: locate the class-grid state variable
-  (charmake UI vtable `0x08C17220`, constructor `0x08A63688`) and check
-  whether it waits on the model/text archive rather than on input.
+  `0x4000`); the PPSSPP visual comparison is weak because its Vulkan
+  `PrintWindow` capture is stale.
+- **Ghidra build mismatch:** the instance at port 8193 is a different EBOOT
+  build than `profiles/tow-2/game/eboot.dec`. The code at `0x08A63984` does
+  not match the generated corpus, the charmake UI constants `0x1ED0/0x1ED4`
+  are absent from the corpus, and the input-state global `0x08B1F42C` reads
+  `0x4A`. Use the generated corpus and runtime traces for tow-2 work; Ghidra
+  addresses in the `0x08A63xxx` range are not authoritative.
+
+### Class-grid input trace (2026-11-20)
+
+Added present-time guest tracing in `tow2_hle.cpp`:
+
+- `PSPRECOMP_TOW2_MEM_DIFF="start_us:end_us[:address[:length]]"` snapshots
+  guest RAM at one time and prints changed 32-bit words at the later time.
+- `PSPRECOMP_TOW2_INPUT_STATE="1|0xADDR"` reads `[global]` and logs the cached
+  button word at `+0x20`.
+- `PSPRECOMP_TOW2_WATCH32="addr,..."` logs every change of listed words.
+- `PSPRECOMP_TOW2_SCAN_WORD_AT="value,..."` + `_AT_US` scans guest RAM for
+  values once at a given guest time.
+- `PSPRECOMP_TOW2_DUMP_AT="t_us:address:length"` dumps a region once.
+- `PSPRECOMP_TOW2_TRACE_PCS="addr,..."` + `_FROM_US` logs dispatches to the
+  listed guest PCs.
+
+Findings:
+
+- The input manager object is at `0x08D4F6B0`; its cached button word is
+  `[+0x20] = 0x08D4F6D0`. Pointers to the object are stored at
+  `0x08D4F694` and `0x08D4F8C0`; `0x08D4F690` is the enclosing singleton.
+- The pad reaches that word. With the class-grid script:
+  `0x40` (Down) at 12.05 s, `0x2040` (Down+Circle) at 13.06 s, `0x6040`
+  (Down+Circle+Cross) at 14.07 s. It is **never cleared**, so the consumer is
+  not running.
+- The input object's typeinfo/vtable pointer is `[+0x10] = 0x08C70E10`; its
+  menu methods are `0x08A6782C`, `0x08A6783C`, `0x08A67908`, `0x08A6A7FC`,
+  `0x08A6A4A0`, `0x08A6A854`, `0x08A6AA78`, `0x08A6AAF0`, `0x08A6A4A8`,
+  `0x08A6A8A0`, `0x08A6A524`, `0x08A6A534`.
+- `PSPRECOMP_TOW2_TRACE_PCS` after 10 s shows only `0x08A6A524` entered once
+  (uid 8, `a0=0x09F9BBD0`); the per-frame input pump `0x08A6A7FC` runs with
+  `a0=0x08D4F3D0` but does not consume the class-grid word. The other menu
+  methods are never entered.
+- Conclusion: this is **not** an input-delivery failure. The class-grid
+  handler/state machine is not scheduled after the grid appears. Next: find
+  the consumer of `0x08D4F6B0` (the singleton at `0x08D4F690` and the code
+  that loads `[+0x20]`) and why that path is not reached.
 
 ## Title scene ordering (2026-11-17)
 Goal: start the title mount before `user_main` resumes, then observe

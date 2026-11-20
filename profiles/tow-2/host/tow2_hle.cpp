@@ -14,7 +14,9 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <deque>
 #include <filesystem>
 #include <fstream>
@@ -494,6 +496,45 @@ void scene_caller_hook(psprecomp::Runtime &runtime,
                        psprecomp::AllegrexContext &ctx,
                        std::uint32_t dispatch_pc,
                        std::int32_t thread_uid) {
+    static const std::vector<std::uint32_t> trace_pcs = [] {
+        std::vector<std::uint32_t> targets;
+        const char *text = std::getenv("PSPRECOMP_TOW2_TRACE_PCS");
+        if (text == nullptr || *text == '\0') return targets;
+        const char *cursor = text;
+        while (*cursor != '\0') {
+            while (*cursor == ',' || *cursor == ' ' || *cursor == '\n')
+                ++cursor;
+            if (*cursor == '\0') break;
+            char *end = nullptr;
+            const unsigned long value = std::strtoul(cursor, &end, 0);
+            if (end == cursor) break;
+            targets.push_back(static_cast<std::uint32_t>(value));
+            cursor = end;
+        }
+        return targets;
+    }();
+    static const std::uint64_t trace_pcs_from_us = [] {
+        if (const char *text = std::getenv("PSPRECOMP_TOW2_TRACE_PCS_FROM_US"))
+            return static_cast<std::uint64_t>(std::strtoull(text, nullptr, 0));
+        return std::uint64_t{0u};
+    }();
+    if (!trace_pcs.empty()) {
+        for (const std::uint32_t target : trace_pcs) {
+            if (dispatch_pc != target) continue;
+            static std::uint64_t logged = 0u;
+            if (g_scheduler.now_us >= trace_pcs_from_us && logged++ < 2000u) {
+                std::uint32_t pad = 0u;
+                if (runtime.memory().contains(0x08D4F6D0u, 4u))
+                    pad = runtime.memory().load32(0x08D4F6D0u);
+                std::cerr << "[tow2-pc] pc=" << psprecomp::hex32(dispatch_pc)
+                          << " uid=" << thread_uid
+                          << " ra=" << psprecomp::hex32(ctx.gpr[31])
+                          << " a0=" << psprecomp::hex32(ctx.gpr[4])
+                          << " pad=" << psprecomp::hex32(pad) << "\n";
+            }
+            break;
+        }
+    }
     static const bool scene_trace =
         std::getenv("PSPRECOMP_TOW2_SCENE_TRACE") != nullptr;
     if (scene_trace) {
@@ -3987,6 +4028,333 @@ void asset_start_trace(psprecomp::Runtime &runtime,
     recomp_unit_0301_entry(runtime, ctx, 372u, view);
 }
 
+// Deterministic host pad mask: physical window keys plus the optional pad
+// script and the legacy periodic Start+Cross helper. Shared by the sceCtrl
+// HLE and the present-time traces so they report the same value.
+std::uint32_t injected_pad_mask() {
+    std::uint32_t buttons = window_buttons();
+    // Deterministic pad script: "time_us:mask[:hold_us],...".
+    // Times and masks accept decimal or 0x-prefixed values.
+    if (const char *script_text = std::getenv("PSPRECOMP_TOW2_PAD_SCRIPT");
+        script_text != nullptr && *script_text != '\0') {
+        struct PadEvent {
+            std::uint64_t time_us{};
+            std::uint32_t mask{};
+            std::uint64_t hold_us{250000u};
+        };
+        static bool loaded = false;
+        static std::vector<PadEvent> events;
+        if (!loaded) {
+            loaded = true;
+            const char *cursor = script_text;
+            while (*cursor != '\0') {
+                while (*cursor == ',' || *cursor == ' ' || *cursor == '\n')
+                    ++cursor;
+                if (*cursor == '\0') break;
+                char *end = nullptr;
+                const unsigned long long time_value =
+                    std::strtoull(cursor, &end, 0);
+                if (end == cursor) break;
+                cursor = end;
+                if (*cursor != ':') break;
+                ++cursor;
+                const unsigned long long mask_value =
+                    std::strtoull(cursor, &end, 0);
+                if (end == cursor) break;
+                cursor = end;
+                PadEvent event;
+                event.time_us = time_value;
+                event.mask = static_cast<std::uint32_t>(mask_value);
+                if (*cursor == ':') {
+                    ++cursor;
+                    const unsigned long long hold_value =
+                        std::strtoull(cursor, &end, 0);
+                    if (end != cursor && hold_value != 0u)
+                        event.hold_us = hold_value;
+                    cursor = end;
+                }
+                events.push_back(event);
+                while (*cursor != '\0' && *cursor != ',') ++cursor;
+            }
+        }
+        for (const PadEvent &event : events) {
+            if (g_scheduler.now_us >= event.time_us &&
+                g_scheduler.now_us < event.time_us + event.hold_us)
+                buttons |= event.mask;
+        }
+    }
+    if (std::getenv("PSPRECOMP_TOW2_PRESS_START") != nullptr) {
+        // Press Start+Cross for 250 ms every 2 s of guest time.
+        if ((g_scheduler.now_us % 2000000u) < 250000u) buttons |= 0x4008u;
+    }
+    return buttons;
+}
+
+// Snapshot a guest region at one guest time and print the 32-bit words that
+// changed by a later guest time. Used to locate the class-grid selection
+// fields without relying on a matching Ghidra build.
+//   PSPRECOMP_TOW2_MEM_DIFF="start_us:end_us[:address[:length]]"
+// Defaults: address 0x08D00000, length 0x00300000 (3 MiB).
+void mem_diff_present(psprecomp::Runtime &runtime) {
+    static bool parsed = false;
+    static bool enabled = false;
+    static std::uint64_t start_us = 0u;
+    static std::uint64_t end_us = 0u;
+    static std::uint32_t address = 0x08D00000u;
+    static std::uint32_t length = 0x00300000u;
+    static std::vector<std::uint8_t> snapshot;
+    static bool done = false;
+
+    if (!parsed) {
+        parsed = true;
+        const char *text = std::getenv("PSPRECOMP_TOW2_MEM_DIFF");
+        if (text != nullptr && *text != '\0') {
+            unsigned long long start = 0u;
+            unsigned long long end = 0u;
+            unsigned int addr = 0u;
+            unsigned int len = 0u;
+            const int fields = std::sscanf(text, "%llu:%llu:%i:%i",
+                                           &start, &end, &addr, &len);
+            if (fields >= 2) {
+                start_us = start;
+                end_us = end;
+                if (fields >= 3 && addr != 0u) address = addr;
+                if (fields >= 4 && len != 0u) length = len;
+                enabled = end_us > start_us && (length & 3u) == 0u;
+            }
+            if (!enabled) {
+                std::cerr << "[tow2-memdiff] ignored config \"" << text
+                          << "\"\n";
+            }
+        }
+    }
+    if (!enabled || done) return;
+
+    if (snapshot.empty()) {
+        if (g_scheduler.now_us < start_us) return;
+        if (!runtime.memory().contains(address, length)) {
+            std::cerr << "[tow2-memdiff] range " << psprecomp::hex32(address)
+                      << "+" << length << " not mapped\n";
+            done = true;
+            return;
+        }
+        snapshot.resize(length);
+        runtime.memory().copy_out(
+            address, std::span<std::uint8_t>(snapshot.data(), snapshot.size()));
+        std::cerr << "[tow2-memdiff] snapshot t_us=" << g_scheduler.now_us
+                  << " frame=" << g_present_count
+                  << " addr=" << psprecomp::hex32(address)
+                  << " len=" << length
+                  << " pad=" << psprecomp::hex32(injected_pad_mask()) << "\n";
+        return;
+    }
+    if (g_scheduler.now_us < end_us) return;
+    done = true;
+    std::uint32_t changes = 0u;
+    std::uint32_t logged = 0u;
+    for (std::uint32_t offset = 0u; offset + 4u <= length; offset += 4u) {
+        std::uint32_t old_value = 0u;
+        std::memcpy(&old_value, snapshot.data() + offset, 4u);
+        const std::uint32_t new_value =
+            runtime.memory().load32(address + offset);
+        if (old_value == new_value) continue;
+        ++changes;
+        if (logged < 400u) {
+            std::cerr << "[tow2-memdiff] " << psprecomp::hex32(address + offset)
+                      << " " << psprecomp::hex32(old_value)
+                      << " -> " << psprecomp::hex32(new_value) << "\n";
+            ++logged;
+        }
+    }
+    std::cerr << "[tow2-memdiff] diff t_us=" << g_scheduler.now_us
+              << " frame=" << g_present_count
+              << " changed_words=" << changes
+              << " logged=" << logged
+              << " pad=" << psprecomp::hex32(injected_pad_mask()) << "\n";
+}
+
+// Probe a guest global that holds the input-state pointer and log its cached
+// button word at +0x20 when it changes.
+//   PSPRECOMP_TOW2_INPUT_STATE=1        (default global 0x08B1F42C)
+//   PSPRECOMP_TOW2_INPUT_STATE=0xADDR   (override the global)
+void input_state_present(psprecomp::Runtime &runtime) {
+    static bool parsed = false;
+    static bool enabled = false;
+    static std::uint32_t global = 0u;
+    static std::uint32_t last_ptr = 0xFFFFFFFFu;
+    static std::uint32_t last_mask = 0xFFFFFFFFu;
+
+    if (!parsed) {
+        parsed = true;
+        const char *text = std::getenv("PSPRECOMP_TOW2_INPUT_STATE");
+        if (text != nullptr && *text != '\0') {
+            enabled = true;
+            global = 0x08B1F42Cu;
+            if (std::strcmp(text, "1") != 0) {
+                const unsigned long value = std::strtoul(text, nullptr, 0);
+                if (value != 0u) global = static_cast<std::uint32_t>(value);
+            }
+        }
+    }
+    if (!enabled || !runtime.memory().contains(global, 4u)) return;
+    const std::uint32_t pointer = runtime.memory().load32(global);
+    if (pointer == 0u || !runtime.memory().contains(pointer + 0x20u, 4u)) {
+        if (pointer != last_ptr) {
+            std::cerr << "[tow2-input] frame=" << g_present_count
+                      << " global=" << psprecomp::hex32(global)
+                      << " ptr=" << psprecomp::hex32(pointer)
+                      << " (invalid)\n";
+            last_ptr = pointer;
+        }
+        return;
+    }
+    const std::uint32_t mask = runtime.memory().load32(pointer + 0x20u);
+    if (mask != last_mask || pointer != last_ptr) {
+        std::cerr << "[tow2-input] frame=" << g_present_count
+                  << " t_us=" << g_scheduler.now_us
+                  << " ptr=" << psprecomp::hex32(pointer)
+                  << " mask=" << psprecomp::hex32(mask) << "\n";
+        last_mask = mask;
+        last_ptr = pointer;
+    }
+}
+
+// Watch a comma-separated list of guest 32-bit words and log every change.
+//   PSPRECOMP_TOW2_WATCH32="0x08D4F6D0,0x08DA1F44"
+void watch32_present(psprecomp::Runtime &runtime) {
+    static bool parsed = false;
+    static std::vector<std::uint32_t> addresses;
+    static std::vector<std::uint32_t> last;
+    if (!parsed) {
+        parsed = true;
+        const char *text = std::getenv("PSPRECOMP_TOW2_WATCH32");
+        if (text != nullptr && *text != '\0') {
+            const char *cursor = text;
+            while (*cursor != '\0') {
+                while (*cursor == ',' || *cursor == ' ' || *cursor == '\n')
+                    ++cursor;
+                if (*cursor == '\0') break;
+                char *end = nullptr;
+                const unsigned long value = std::strtoul(cursor, &end, 0);
+                if (end == cursor) break;
+                addresses.push_back(static_cast<std::uint32_t>(value));
+                last.push_back(0xFFFFFFFFu);
+                cursor = end;
+            }
+        }
+    }
+    for (std::size_t index = 0u; index < addresses.size(); ++index) {
+        const std::uint32_t address = addresses[index];
+        if (!runtime.memory().contains(address, 4u)) continue;
+        const std::uint32_t value = runtime.memory().load32(address);
+        if (value == last[index]) continue;
+        std::cerr << "[tow2-watch32] frame=" << g_present_count
+                  << " t_us=" << g_scheduler.now_us
+                  << " " << psprecomp::hex32(address)
+                  << " " << psprecomp::hex32(last[index])
+                  << " -> " << psprecomp::hex32(value) << "\n";
+        last[index] = value;
+    }
+}
+
+// One-shot present-time scan for 32-bit values in guest RAM. Unlike the
+// startup SCAN_WORD pass this runs after the menu objects exist.
+//   PSPRECOMP_TOW2_SCAN_WORD_AT="0x08D4F6B0,0x08D4F6D0"
+//   PSPRECOMP_TOW2_SCAN_WORD_AT_US=12000000   (optional trigger time)
+void scan_word_present(psprecomp::Runtime &runtime) {
+    static bool parsed = false;
+    static bool done = false;
+    static std::uint64_t at_us = 12000000u;
+    static std::vector<std::uint32_t> targets;
+    if (!parsed) {
+        parsed = true;
+        if (const char *text = std::getenv("PSPRECOMP_TOW2_SCAN_WORD_AT");
+            text != nullptr && *text != '\0') {
+            const char *cursor = text;
+            while (*cursor != '\0') {
+                while (*cursor == ',' || *cursor == ' ' || *cursor == '\n')
+                    ++cursor;
+                if (*cursor == '\0') break;
+                char *end = nullptr;
+                const unsigned long value = std::strtoul(cursor, &end, 0);
+                if (end == cursor) break;
+                targets.push_back(static_cast<std::uint32_t>(value));
+                cursor = end;
+            }
+        }
+        if (const char *at_text = std::getenv("PSPRECOMP_TOW2_SCAN_WORD_AT_US"))
+            at_us = std::strtoull(at_text, nullptr, 0);
+        done = targets.empty();
+    }
+    if (done || g_scheduler.now_us < at_us) return;
+    done = true;
+    std::uint32_t hits = 0u;
+    for (std::uint32_t address = 0x08800000u; address + 4u < 0x0A000000u;
+         address += 4u) {
+        if (!runtime.memory().contains(address, 4u)) continue;
+        const std::uint32_t value = runtime.memory().load32(address);
+        bool match = false;
+        for (const std::uint32_t target : targets) {
+            if (value == target) {
+                match = true;
+                break;
+            }
+        }
+        if (!match) continue;
+        std::cerr << "[tow2-word] " << psprecomp::hex32(value) << " at "
+                  << psprecomp::hex32(address) << " t_us="
+                  << g_scheduler.now_us << "\n";
+        ++hits;
+    }
+    std::cerr << "[tow2-word] scan done hits=" << hits
+              << " t_us=" << g_scheduler.now_us << "\n";
+}
+
+// One-shot hex dump of a guest region at a guest time.
+//   PSPRECOMP_TOW2_DUMP_AT="t_us:address:length"
+void dump_at_present(psprecomp::Runtime &runtime) {
+    static bool parsed = false;
+    static bool done = false;
+    static std::uint64_t at_us = 0u;
+    static std::uint32_t address = 0u;
+    static std::uint32_t length = 0u;
+    if (!parsed) {
+        parsed = true;
+        const char *text = std::getenv("PSPRECOMP_TOW2_DUMP_AT");
+        if (text != nullptr && *text != '\0') {
+            unsigned long long at = 0u;
+            unsigned int addr = 0u;
+            unsigned int len = 0u;
+            if (std::sscanf(text, "%llu:%i:%i", &at, &addr, &len) >= 3 &&
+                len != 0u) {
+                at_us = at;
+                address = addr;
+                length = (len + 3u) & ~3u;
+            }
+        }
+        done = length == 0u;
+    }
+    if (done || g_scheduler.now_us < at_us) return;
+    done = true;
+    if (!runtime.memory().contains(address, length)) {
+        std::cerr << "[tow2-dump] range " << psprecomp::hex32(address)
+                  << "+" << length << " not mapped\n";
+        return;
+    }
+    std::cerr << "[tow2-dump] " << psprecomp::hex32(address) << "+" << length
+              << " t_us=" << g_scheduler.now_us << "\n";
+    for (std::uint32_t offset = 0u; offset < length; offset += 16u) {
+        std::cerr << "[tow2-dump] " << psprecomp::hex32(address + offset) << ":";
+        for (std::uint32_t word = 0u; word < 16u && offset + word < length;
+             word += 4u) {
+            std::cerr << " "
+                      << psprecomp::hex32(
+                             runtime.memory().load32(address + offset + word));
+        }
+        std::cerr << "\n";
+    }
+}
+
 void register_overrides(psprecomp::Runtime &runtime) {
     if (std::getenv("PSPRECOMP_TOW2_SKIP_INVALID_FREE") != nullptr) {
         runtime.register_function(0x08A7680Cu, &free_guard,
@@ -4001,9 +4369,12 @@ void register_overrides(psprecomp::Runtime &runtime) {
 void register_hle(psprecomp::Runtime &runtime, std::uint32_t user_arena_start) {
     g_mpeg_memory = &runtime.memory();
     if (std::getenv("PSPRECOMP_TOW2_SCENE_WATCH") != nullptr ||
-        std::getenv("PSPRECOMP_TOW2_SCENE_TRACE") != nullptr) {
+        std::getenv("PSPRECOMP_TOW2_SCENE_TRACE") != nullptr ||
+        std::getenv("PSPRECOMP_TOW2_TRACE_PCS") != nullptr) {
         psprecomp::set_runtime_pre_dispatch_hook(&scene_caller_hook);
-        psprecomp::set_runtime_post_dispatch_hook(&scene_watch_hook);
+        if (std::getenv("PSPRECOMP_TOW2_SCENE_WATCH") != nullptr ||
+            std::getenv("PSPRECOMP_TOW2_SCENE_TRACE") != nullptr)
+            psprecomp::set_runtime_post_dispatch_hook(&scene_watch_hook);
     }
     if (std::getenv("PSPRECOMP_TOW2_TITLE_TRIGGER") != nullptr) {
         runtime.register_function(kTitleCreatorThread,
@@ -4059,6 +4430,36 @@ void register_hle(psprecomp::Runtime &runtime, std::uint32_t user_arena_start) {
                     runtime.memory().load32(address + offset));
             }
             std::cerr << "\n";
+        }
+    }
+    if (const char *scan_text = std::getenv("PSPRECOMP_TOW2_SCAN_WORD");
+        scan_text != nullptr && *scan_text != '\0') {
+        std::vector<std::uint32_t> targets;
+        const char *cursor = scan_text;
+        while (*cursor != '\0') {
+            while (*cursor == ',' || *cursor == ' ' || *cursor == '\n')
+                ++cursor;
+            if (*cursor == '\0') break;
+            char *end = nullptr;
+            const unsigned long value = std::strtoul(cursor, &end, 0);
+            if (end == cursor) break;
+            targets.push_back(static_cast<std::uint32_t>(value));
+            cursor = end;
+        }
+        for (std::uint32_t address = 0x08804000u;
+             address + 4u <= user_arena_start; address += 4u) {
+            if (!runtime.memory().contains(address, 4u)) continue;
+            const std::uint32_t value = runtime.memory().load32(address);
+            bool match = false;
+            for (const std::uint32_t target : targets) {
+                if (value == target) {
+                    match = true;
+                    break;
+                }
+            }
+            if (!match) continue;
+            std::cerr << "[tow2-word] " << psprecomp::hex32(value) << " at "
+                      << psprecomp::hex32(address) << "\n";
         }
     }
     load_libfile_module(runtime,
@@ -5003,6 +5404,11 @@ void register_hle(psprecomp::Runtime &runtime, std::uint32_t user_arena_start) {
             static std::uint64_t presents = 0u;
             ++presents;
             ++g_present_count;
+            mem_diff_present(rt);
+            input_state_present(rt);
+            watch32_present(rt);
+            scan_word_present(rt);
+            dump_at_present(rt);
             // The audio backend does not run the guest cSoundMusic mixer, so
             // the embedded music task at [0x08D14F10]+0x208 stays in state
             // 0x8000 with a requested target of 0. The title's exit path waits
@@ -5200,61 +5606,7 @@ void register_hle(psprecomp::Runtime &runtime, std::uint32_t user_arena_start) {
                 ctx.set_gpr(2, 0u);
                 return;
             }
-            std::uint32_t buttons = window_buttons();
-            // Deterministic pad script: "time_us:mask[:hold_us],...".
-            // Times and masks accept decimal or 0x-prefixed values.
-            if (const char *script_text = std::getenv("PSPRECOMP_TOW2_PAD_SCRIPT");
-                script_text != nullptr && *script_text != '\0') {
-                struct PadEvent {
-                    std::uint64_t time_us{};
-                    std::uint32_t mask{};
-                    std::uint64_t hold_us{250000u};
-                };
-                static bool loaded = false;
-                static std::vector<PadEvent> events;
-                if (!loaded) {
-                    loaded = true;
-                    const char *cursor = script_text;
-                    while (*cursor != '\0') {
-                        while (*cursor == ',' || *cursor == ' ' || *cursor == '\n')
-                            ++cursor;
-                        if (*cursor == '\0') break;
-                        char *end = nullptr;
-                        const unsigned long long time_value =
-                            std::strtoull(cursor, &end, 0);
-                        if (end == cursor) break;
-                        cursor = end;
-                        if (*cursor != ':') break;
-                        ++cursor;
-                        const unsigned long long mask_value =
-                            std::strtoull(cursor, &end, 0);
-                        if (end == cursor) break;
-                        cursor = end;
-                        PadEvent event;
-                        event.time_us = time_value;
-                        event.mask = static_cast<std::uint32_t>(mask_value);
-                        if (*cursor == ':') {
-                            ++cursor;
-                            const unsigned long long hold_value =
-                                std::strtoull(cursor, &end, 0);
-                            if (end != cursor && hold_value != 0u)
-                                event.hold_us = hold_value;
-                            cursor = end;
-                        }
-                        events.push_back(event);
-                        while (*cursor != '\0' && *cursor != ',') ++cursor;
-                    }
-                }
-                for (const PadEvent &event : events) {
-                    if (g_scheduler.now_us >= event.time_us &&
-                        g_scheduler.now_us < event.time_us + event.hold_us)
-                        buttons |= event.mask;
-                }
-            }
-            if (std::getenv("PSPRECOMP_TOW2_PRESS_START") != nullptr) {
-                // Press Start+Cross for 250 ms every 2 s of guest time.
-                if ((g_scheduler.now_us % 2000000u) < 250000u) buttons |= 0x4008u;
-            }
+            std::uint32_t buttons = injected_pad_mask();
             if (std::getenv("PSPRECOMP_TOW2_CTRL_DIAG") != nullptr) {
                 static std::uint64_t reads = 0u;
                 ++reads;
