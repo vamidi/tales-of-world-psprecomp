@@ -6348,6 +6348,38 @@ void register_hle(psprecomp::Runtime &runtime, std::uint32_t user_arena_start) {
                     }
                 }
             }
+            // Field control model: the charmake -> field transition zeroes
+            // the scene manager and never attaches the player to the leader
+            // (leader+0x1151 bit 0 stays set, leader+0x1174 is null). Reattach
+            // the first field entity and leave event/camera mode so the field
+            // accepts movement. PSPRECOMP_TOW2_FIELD_CONTROL=1 enables it.
+            if (std::getenv("PSPRECOMP_TOW2_FIELD_CONTROL") != nullptr) {
+                auto &memory = rt.memory();
+                constexpr std::uint32_t kLeader = 0x09FA1100u;
+                constexpr std::uint32_t kField = 0x09FA02F0u;
+                if (memory.contains(kField + 4u, 4u) &&
+                    memory.contains(kLeader + 4468u, 4u)) {
+                    const std::uint32_t entities = memory.load32(kField + 4u);
+                    const std::uint32_t player =
+                        memory.contains(entities, 4u)
+                            ? memory.load32(entities) : 0u;
+                    const std::uint8_t mode = memory.load8(kLeader + 4433u);
+                    if (player != 0u && (mode & 1u) != 0u) {
+                        memory.store8(
+                            kLeader + 4433u,
+                            static_cast<std::uint8_t>(mode & ~1u));
+                        memory.store32(kLeader + 4468u, player);
+                        static std::uint32_t attached = 0u;
+                        if (attached++ < 8u) {
+                            std::cerr << "[tow2-field] attach player="
+                                      << psprecomp::hex32(player)
+                                      << " mode=" << psprecomp::hex32(mode)
+                                      << " frame=" << g_present_count
+                                      << " t_us=" << g_scheduler.now_us << "\n";
+                        }
+                    }
+                }
+            }
             if (std::getenv("PSPRECOMP_TOW2_PRESENT_DIAG") != nullptr &&
                 (presents <= 3u || presents % 240u == 0u)) {
                 auto &memory = rt.memory();

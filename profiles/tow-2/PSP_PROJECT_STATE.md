@@ -1007,9 +1007,29 @@ Findings:
 - Added `PSPRECOMP_TOW2_PAD_ANALOG="time_us:lx:ly[:hold_us],..."`
   (0x80 center, Y grows downward) to inject the analog stick.
 - Next stall: the field is static. D-pad and analog-stick movement do not
-  move the character; the quest manager still reports `scene_id=65535`.
-  The field event may be waiting for a script trigger, or field control is
-  not enabled yet.
+  move the character. Trace (2026-11-20):
+  - The field module runs on uid 8 (`0x08A12898` -> `0x08A11D20`) and reads
+    the D-pad for interaction/menu (`0x08979708`, `0x08977D38`), but the
+    player controller never consumes movement.
+  - The charmake -> field transition **memsets** the quest/scene manager
+    `0x08D9B920` (`0x08AA33C0` is memset, not a scene setter). It ends with
+    `scene_impl=0`, `scene_id=0xFFFF`, and an empty actor array.
+  - The field object `0x09FA02F0` (map 12) has an empty actor-id list
+    (`+0x0C = 0xFFFFFFFF`). Its entity array `0x08F37000` still holds the
+    player model `0x08DBC820` and the other entities.
+  - The leader/camera `0x09FA1100` is in **event mode**
+    (`+0x1151` bit 0 set) and has **no player target** (`+0x1174 = 0`). Its
+    update (`0x08A185EC`) takes the event/camera path.
+  - The skit controller reaches state `-1` after the second line
+    (frame 1138, `0x08DA0350 = 0xFFFFFFFF`), so the skit itself is done.
+  - The missing piece is the **field scenario** (the quest manager's
+    `scene_impl`). The charmake path bypasses the normal field-scene load,
+    so the event-end cleanup (clear event mode, attach the player, spawn the
+    actors) never runs.
+  - Reattaching the player in the present hook is overwritten each frame by
+    the event path (`PSPRECOMP_TOW2_FIELD_CONTROL=1` experiments with this).
+    The next step is to attach the field scenario (or model its event-end
+    cleanup) rather than patching the leader fields.
 
 ## Title scene ordering (2026-11-17)
 Goal: start the title mount before `user_main` resumes, then observe
