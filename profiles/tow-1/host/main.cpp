@@ -21,6 +21,38 @@ constexpr std::uint64_t kDefaultMaxDispatches = 10'000'000ull;
 
 psprecomp::Runtime *g_runtime_for_exit_report = nullptr;
 
+// Diagnostic: force the game's Town task once, from a safe dispatch boundary.
+// Town task table entry: name "Town" -> FUN_08828570.  The task normally opens
+// the Ailily town menu and returns a mode code.  We save the interrupted guest
+// context and restore it when the task returns to the sentinel address.
+psprecomp::AllegrexContext g_force_saved_context;
+bool g_force_active = false;
+bool g_force_used = false;
+std::uint32_t g_force_target_present = 0u;
+constexpr std::uint32_t kForceReturnSentinel = 0x08804000u;
+
+void force_town_pre_dispatch(psprecomp::Runtime &, psprecomp::AllegrexContext &ctx,
+                             std::uint32_t, std::int32_t) {
+    if (!g_force_used && !g_force_active &&
+        tow1::window_post_osk_present_count() >= g_force_target_present) {
+        g_force_saved_context = ctx;
+        g_force_active = true;
+        g_force_used = true;
+        ctx.pc = 0x08828570u;
+        ctx.gpr[29] = g_force_saved_context.gpr[29];
+        ctx.gpr[31] = kForceReturnSentinel;
+        ctx.gpr[4] = 0u;
+        std::cerr << "[tow1-force-town] entering Town task at present="
+                  << tow1::window_post_osk_present_count() << "\n";
+        return;
+    }
+    if (g_force_active && ctx.pc == kForceReturnSentinel) {
+        ctx = g_force_saved_context;
+        g_force_active = false;
+        std::cerr << "[tow1-force-town] Town task returned; restored context\n";
+    }
+}
+
 std::uint64_t parse_dispatches(const char *text) {
     if (text == nullptr || *text == '\0') return kDefaultMaxDispatches;
     errno = 0;
@@ -149,6 +181,15 @@ int main(int argc, char **argv) {
                   << "Functions:  " << runtime.function_count() << "\n"
                   << "Dispatch cap: " << max_dispatches << "\n";
 
+        if (const char *force_text =
+                std::getenv("PSPRECOMP_TOW1_FORCE_TOWN_AT_PRESENT");
+            force_text != nullptr && *force_text != '\0') {
+            g_force_target_present = static_cast<std::uint32_t>(
+                std::strtoul(force_text, nullptr, 0));
+            psprecomp::set_runtime_pre_dispatch_hook(&force_town_pre_dispatch);
+            std::cerr << "[tow1-force-town] armed at post-OSK present="
+                      << g_force_target_present << "\n";
+        }
         tow1::window_start();
         runtime.run(elf.runtime_entry(), max_dispatches);
         tow1::ge_shutdown();

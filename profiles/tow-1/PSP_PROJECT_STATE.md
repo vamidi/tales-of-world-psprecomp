@@ -535,13 +535,19 @@ The full import/HLE matrix and milestone order live in
 
 ## Corpus regeneration
 
-The title path needs a function that the heuristic analyzer misses:
+The title path needs a function that the heuristic analyzer misses. The Town
+task is the second explicit seed:
 
 ```bat
-set PSPRECOMP_EXTRA_FUNCTIONS=0x08805FDC
+set PSPRECOMP_EXTRA_FUNCTIONS=0x08805FDC,0x08828570
 out\framework\psp_recomp.exe profiles\tow-1\game\eboot.dec ^
   --auto profiles\tow-1\generated 0x08804000 0x2000
 ```
+
+Current corpus after adding the Town task seed: 48,180 function seeds, 654
+units, 879,040 emitted code PCs. The runtime still rejects a direct `ctx.pc`
+redirect to `0x08828570`; the seed is present, but the unit entry id is not
+being selected by the host redirect.
 
 `analyze_program` accepts extra seeds, and `madd`/`maddu`/`msub`/`msubu` are now
 lowered.
@@ -612,6 +618,13 @@ If the game does not progress in PPSSPP either, install PSP firmware
   index to 7 (**Exit town**). This makes the Guild selection deterministic
   **once the town menu is on screen**; it does not yet make the
   shop-to-town-menu transition deterministic.
+- `PSPRECOMP_TOW1_FORCE_TOWN_AT_PRESENT=N` — host pre-dispatch redirect into
+  the Town task (`0x08828570`) at post-OSK present `N`. The task-table trace is
+  `Title -> FUN_088216ac`, `Town -> FUN_08828570`, from the name/function
+  table at `0x08D42240`. Current result: the redirect fails with
+  `invalid internal function entry` because it bypasses the registered-unit
+  entry id; use `Runtime::invoke_isolated_aot` or the task manager instead of
+  writing `ctx.pc` directly.
 - `PSPRECOMP_TOW1_FRAME_DIAG=1`
 - `PSPRECOMP_TOW1_FRAME_DUMP=...`
 - `PSPRECOMP_EXTRA_FUNCTIONS=0x...` (generator extra entry seeds)
