@@ -933,6 +933,10 @@ Findings:
   class-grid input loop at `0x089F5F50` runs, Circle selects a class, the
   OSK opens and closes, and the run continues to `0x08A790F4` instead of
   stalling. The class-grid UI/task is now created and consumes input.
+- Visual confirmation: frames at present 500/1000 show the character
+  creation preview (3D character model with sword, class background and UI
+  panels), so the charmake UI/task is alive and rendering. Captured to
+  `progress/frame_cre.png` (untracked).
 - Next frontier: `0x08A790F4` (title/actor update path) after the name
   entry; inspect the post-creation scene transition.
 
