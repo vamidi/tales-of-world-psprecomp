@@ -247,6 +247,8 @@ std::uint32_t g_framebuffer_stride = 0u;
 std::uint32_t g_framebuffer_format = 0u;
 bool g_volatile_memory_locked = false;
 std::int32_t g_savedata_status = 0;
+std::int32_t g_osk_status = 0;
+std::uint32_t g_osk_params = 0u;
 
 std::array<bool, 8> g_audio_channel_reserved{};
 std::array<std::uint32_t, 8> g_audio_channel_samples{};
@@ -483,6 +485,8 @@ std::uint32_t g_state_prev_pc = 0u;
 std::uint32_t g_title_arc_buffer = 0u;
 std::uint32_t g_title_arc_bytes = 0u;
 std::uint64_t g_present_count = 0u;
+// Set when the raw multi-megabyte charmake archive read has completed.
+bool g_charmake_archive_loaded = false;
 
 constexpr std::uint32_t kIsolatedReturnSentinel = 0xDEADBEEFu;
 void inspect_ezbind_archive(const std::filesystem::path &host_path,
@@ -1313,6 +1317,18 @@ void fire_ge_callback(psprecomp::Runtime &runtime,
                   << " func=" << psprecomp::hex32(g_ge_callback_func)
                   << " arg=" << psprecomp::hex32(g_ge_callback_arg)
                   << " pc=" << psprecomp::hex32(callback_ctx.pc) << "\n";
+    }
+    if (std::getenv("PSPRECOMP_TOW2_GE_CB_DIAG") != nullptr &&
+        g_scheduler.now_us >= 10000000u) {
+        std::uint32_t flag = 0u;
+        if (runtime.memory().contains(0x09FA3DF0u, 4u))
+            flag = runtime.memory().load32(0x09FA3DF0u);
+        std::cerr << "[tow2-ge-cb] t_us=" << g_scheduler.now_us
+                  << " call=" << g_ge_callback_calls
+                  << " ok=" << (ok ? 1 : 0)
+                  << " func=" << psprecomp::hex32(g_ge_callback_func)
+                  << " arg=" << psprecomp::hex32(g_ge_callback_arg)
+                  << " flag=" << psprecomp::hex32(flag) << "\n";
     }
     g_ge_callback_running = false;
 }
@@ -2713,6 +2729,7 @@ std::int32_t read_host_file(psprecomp::Runtime &runtime, std::int32_t fd,
                   << "\" t_us=" << g_scheduler.now_us
                   << " ra=" << psprecomp::hex32(caller_ra)
                   << " uid=" << g_scheduler.current_uid << "\n";
+        if (got >= 2000000u) g_charmake_archive_loaded = true;
         g_title_arc_buffer = buffer;
         g_title_arc_bytes = static_cast<std::uint32_t>(got);
         if (runtime.memory().contains(buffer + 0x160u, 16u) &&
@@ -4602,6 +4619,47 @@ void charmake_wait_pump(psprecomp::Runtime &runtime,
     }
     auto view = runtime.memory().aot_fast_view();
     recomp_unit_0310_entry(runtime, ctx, 42u, view);
+    // Modeled charmake completion: the wait loop at 0x089FB488 pumps with
+    // s0 = the wait object and polls [s0+3168]. Once the 2.8 MB archive read
+    // has landed, clear the loading bit so the setup can continue.
+    const bool completion_enabled =
+        std::getenv("PSPRECOMP_TOW2_CHARMAKE_WAIT") == nullptr ||
+        std::getenv("PSPRECOMP_TOW2_CHARMAKE_COMPLETE") != nullptr;
+    if (completion_enabled && ra == 0x089FB498u &&
+        g_charmake_archive_loaded) {
+        const std::uint32_t object = ctx.gpr[16];
+        if (object != 0u && runtime.memory().contains(object + 3168u, 4u)) {
+            const std::uint32_t word =
+                runtime.memory().load32(object + 3168u);
+            if ((word & 1u) != 0u) {
+                runtime.memory().store32(object + 3168u, word & ~1u);
+                std::cerr << "[tow2-charmake] cleared loading flag obj="
+                          << psprecomp::hex32(object)
+                          << " word=" << psprecomp::hex32(word)
+                          << " -> " << psprecomp::hex32(word & ~1u)
+                          << " t_us=" << g_scheduler.now_us << "\n";
+            }
+        }
+    }
+    if (std::getenv("PSPRECOMP_TOW2_CHARMAKE_WAIT_TRACE") != nullptr &&
+        ra == 0x089F5F50u) {
+        static std::uint32_t last_state = 0xFFFFFFFFu;
+        const std::uint32_t manager = ctx.gpr[20];
+        std::uint32_t state = 0u;
+        if (manager != 0u &&
+            runtime.memory().contains(manager + 0x1Cu, 4u))
+            state = runtime.memory().load32(manager + 0x1Cu);
+        if (state != last_state) {
+            std::uint32_t pad = 0u;
+            if (runtime.memory().contains(0x08D4F6D0u, 4u))
+                pad = runtime.memory().load32(0x08D4F6D0u);
+            std::cerr << "[tow2-ui] mgr=" << psprecomp::hex32(manager)
+                      << " +1C=" << psprecomp::hex32(state)
+                      << " pad=" << psprecomp::hex32(pad)
+                      << " t_us=" << g_scheduler.now_us << "\n";
+            last_state = state;
+        }
+    }
 }
 
 void charmake_wait_state(psprecomp::Runtime &runtime,
@@ -4643,9 +4701,13 @@ void charmake_open_trace(psprecomp::Runtime &runtime,
 }
 
 void register_overrides(psprecomp::Runtime &runtime) {
-    if (std::getenv("PSPRECOMP_TOW2_CHARMAKE_WAIT_TRACE") != nullptr) {
+    if (std::getenv("PSPRECOMP_TOW2_CHARMAKE_WAIT") == nullptr ||
+        std::getenv("PSPRECOMP_TOW2_CHARMAKE_COMPLETE") != nullptr ||
+        std::getenv("PSPRECOMP_TOW2_CHARMAKE_WAIT_TRACE") != nullptr) {
         runtime.register_function(0x08A703D8u, &charmake_wait_pump,
                                   "tow2_charmake_wait_pump");
+    }
+    if (std::getenv("PSPRECOMP_TOW2_CHARMAKE_WAIT_TRACE") != nullptr) {
         runtime.register_function(0x08A6FEC0u, &charmake_wait_state,
                                   "tow2_charmake_wait_state");
         runtime.register_function(0x08A4ADF8u, &charmake_sound_trace,
@@ -6061,6 +6123,99 @@ void register_hle(psprecomp::Runtime &runtime, std::uint32_t user_arena_start) {
     runtime.register_hle("sceUtility", 0x9790B33Cu, // sceUtilitySavedataShutdownStart
         [](psprecomp::Runtime &, psprecomp::AllegrexContext &ctx) {
             g_savedata_status = 0;
+            ctx.set_gpr(2, 0u);
+        });
+    runtime.register_hle("sceUtility", 0xF6269B82u, // sceUtilityOskInitStart
+        [](psprecomp::Runtime &rt, psprecomp::AllegrexContext &ctx) {
+            g_osk_params = ctx.gpr[4];
+            g_osk_status = 2; // PSP_UTILITY_DIALOG_VISIBLE
+            if (g_osk_params != 0u &&
+                rt.memory().contains(g_osk_params, 0x40u)) {
+                rt.memory().store32(g_osk_params + 0x1Cu, 0u); // base.result
+                rt.memory().store32(g_osk_params + 0x38u, 3u); // visible
+                const std::uint32_t data =
+                    rt.memory().load32(g_osk_params + 0x34u);
+                if (data != 0u && rt.memory().contains(data, 0x34u)) {
+                    const std::uint32_t initial =
+                        rt.memory().load32(data + 32u);
+                    const std::uint32_t output =
+                        rt.memory().load32(data + 40u);
+                    const std::uint32_t limit =
+                        rt.memory().load32(data + 48u);
+                    std::uint32_t length = 0u;
+                    if (initial != 0u && rt.memory().contains(initial, 2u)) {
+                        while (length < 31u &&
+                               rt.memory().contains(initial + length * 2u, 2u) &&
+                               rt.memory().load16(initial + length * 2u) != 0u)
+                            ++length;
+                    }
+                    if (length == 0u) {
+                        const char default_name[] = "Radiant";
+                        if (output != 0u && limit > 0u &&
+                            rt.memory().contains(
+                                output, static_cast<std::size_t>(limit) * 2u)) {
+                            const std::uint32_t count = std::min<std::uint32_t>(
+                                limit - 1u, sizeof(default_name) - 1u);
+                            for (std::uint32_t index = 0u; index < count; ++index)
+                                rt.memory().store16(
+                                    output + index * 2u,
+                                    static_cast<std::uint16_t>(default_name[index]));
+                            rt.memory().store16(output + count * 2u, 0u);
+                            length = count;
+                        }
+                    } else if (output != 0u && limit > 0u &&
+                               rt.memory().contains(
+                                   output, static_cast<std::size_t>(limit) * 2u)) {
+                        length = std::min(length, limit - 1u);
+                        for (std::uint32_t index = 0u; index < length; ++index)
+                            rt.memory().store16(
+                                output + index * 2u,
+                                rt.memory().load16(initial + index * 2u));
+                        rt.memory().store16(output + length * 2u, 0u);
+                    }
+                    rt.memory().store32(data + 44u, 2u); // OSK_RESULT_CHANGED
+                }
+            }
+            if (std::getenv("PSPRECOMP_TOW2_OSK_DIAG") != nullptr)
+                std::cerr << "[tow2-osk] init params="
+                          << psprecomp::hex32(g_osk_params)
+                          << " -> visible\n";
+            ctx.set_gpr(2, 0u);
+        });
+    runtime.register_hle("sceUtility", 0x4B85C861u, // sceUtilityOskUpdate
+        [](psprecomp::Runtime &rt, psprecomp::AllegrexContext &ctx) {
+            // The game's OSK loop handles QUIT (3), then ShutdownStart, then
+            // NONE (0). FINISHED (4) does not advance that loop.
+            g_osk_status = 3;
+            if (g_osk_params != 0u &&
+                rt.memory().contains(g_osk_params, 0x40u))
+                rt.memory().store32(g_osk_params + 0x38u, 4u); // quit
+            if (std::getenv("PSPRECOMP_TOW2_OSK_DIAG") != nullptr)
+                std::cerr << "[tow2-osk] update -> quit\n";
+            ctx.set_gpr(2, 0u);
+        });
+    runtime.register_hle("sceUtility", 0xF3F76017u, // sceUtilityOskGetStatus
+        [](psprecomp::Runtime &, psprecomp::AllegrexContext &ctx) {
+            if (std::getenv("PSPRECOMP_TOW2_OSK_DIAG") != nullptr) {
+                static std::uint32_t gets = 0u;
+                if (gets++ < 32u)
+                    std::cerr << "[tow2-osk] status -> " << g_osk_status
+                              << "\n";
+            }
+            ctx.set_gpr(2, static_cast<std::uint32_t>(g_osk_status));
+        });
+    runtime.register_hle("sceUtility", 0x3DFAEBA9u, // sceUtilityOskShutdownStart
+        [](psprecomp::Runtime &rt, psprecomp::AllegrexContext &ctx) {
+            if (g_osk_params != 0u &&
+                rt.memory().contains(g_osk_params, 0x40u))
+                rt.memory().store32(g_osk_params + 0x38u, 5u); // finished
+            g_osk_status = 0;
+            if (std::getenv("PSPRECOMP_TOW2_OSK_DIAG") != nullptr)
+                std::cerr << "[tow2-osk] shutdown\n";
+            ctx.set_gpr(2, 0u);
+        });
+    runtime.register_hle("sceUtility", 0x5D5FCB91u, // sceUtilityOskGetSize
+        [](psprecomp::Runtime &, psprecomp::AllegrexContext &ctx) {
             ctx.set_gpr(2, 0u);
         });
 

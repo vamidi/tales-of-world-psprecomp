@@ -307,6 +307,16 @@ bool run_list(psprecomp::Runtime &runtime, std::uint32_t list, std::uint32_t sta
         case kGeCommandFinish:
             return true;
         default:
+            if (std::getenv("PSPRECOMP_TOW2_GE_OPCODE_DIAG") != nullptr &&
+                op >= 0x20u && op <= 0x2Fu) {
+                static std::uint32_t logged = 0u;
+                if (logged++ < 200u) {
+                    std::cerr << "[tow2-ge-op] list="
+                              << psprecomp::hex32(start)
+                              << " op=" << psprecomp::hex32(op)
+                              << " data=" << psprecomp::hex32(data) << "\n";
+                }
+            }
             break;
         }
 

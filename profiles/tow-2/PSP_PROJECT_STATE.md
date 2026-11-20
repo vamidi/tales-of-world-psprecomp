@@ -915,6 +915,27 @@ Findings:
   - `[tow2-open]` and the raw-archive log now include `t_us`, `caller`/`ra`
     and `uid`.
 
+### Charmake wait released; name entry reached (2026-11-20)
+
+- Modeled the charmake load completion: once the 2.8 MB
+  `common/charmake_bk.arc` read has landed, the pump wrapper clears the
+  loading bit at `[obj+3168]` (`0x09FA3DF0`, `0x08DA1201 -> 0x08DA1200`).
+  Enabled by default; `PSPRECOMP_TOW2_CHARMAKE_WAIT=1` keeps the true wait.
+- Added the missing `vflush` decoding: the game uses the
+  `0x34 / group 1 / op 28` form (`0xD03C8180`), not the decoder's `0x3F`
+  form. `vflush` was already a no-op in the codegen. Regenerated the corpus
+  with `scripts/generate.bat`.
+- Added the OSK HLE: `sceUtilityOskInitStart` (`0xF6269B82`), `Update`
+  (`0x4B85C861`), `GetStatus` (`0xF3F76017`), `ShutdownStart`
+  (`0x3DFAEBA9`) and `GetSize` (`0x5D5FCB91`). It auto-fills the name with
+  `"Radiant"` and completes the dialog.
+- Verified flow: the setup continues past the second asset load, the
+  class-grid input loop at `0x089F5F50` runs, Circle selects a class, the
+  OSK opens and closes, and the run continues to `0x08A790F4` instead of
+  stalling. The class-grid UI/task is now created and consumes input.
+- Next frontier: `0x08A790F4` (title/actor update path) after the name
+  entry; inspect the post-creation scene transition.
+
 ## Title scene ordering (2026-11-17)
 Goal: start the title mount before `user_main` resumes, then observe
 `TitleArchive/...` requests.
