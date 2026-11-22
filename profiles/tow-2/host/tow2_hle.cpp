@@ -6393,6 +6393,13 @@ void register_hle(psprecomp::Runtime &runtime, std::uint32_t user_arena_start) {
                         memory.store8(kController + 28u, 1u);
                         memory.store8(kField + 0x0Cu, 0u);
                         memory.store8(kField + 0x0Du, 0xFFu);
+                        // Player-control movement list: 0x08DA0880+0xE4 is
+                        // walked by 0x0882F650 and drives each actor through
+                        // its vtable +68. The scenario fills it with the
+                        // player actor; point it at the entity array and set
+                        // the player entity's control mode (+0xA0 = 0x80).
+                        memory.store32(0x08DA0964u, 0x08F37000u);
+                        memory.store32(player + 0xA0u, 0x80u);
                         // The game itself installs the correct camera target
                         // node after the skit (0x08DA1E40), then clears it
                         // because the scenario is missing. Capture the last

@@ -1061,8 +1061,20 @@ Findings:
     missing. The node's `+0x08` points at the scene model (`0x08DA1D10`).
   - The model captures that node and restores it after the skit (state -1).
     This runs the target update `0x08A3AA98` without crashing.
-  - The movement is still locked by the field control/controller state that
-    the scenario sets. The scenario (`scene_impl`) is the remaining piece.
+  - The control unlock is the **movement list** at `0x08DA0880+0xE4`
+    (`0x08DA0964`). `0x0882F608` walks it (when `+0x2738` is 0) and calls
+    each actor's vtable +68. The scenario fills it with the player actor;
+    the charmake path leaves it empty.
+  - `0x08DA0880+0x2738` (`0x08DA2FB8`) is 0, so the movement list is the
+    active path.
+  - Pointing the list at the entity array and setting the model entity's
+    control mode (`0x08DBC820+0xA0 = 0x80`) runs without crashing, but the
+    model entity's +68 is the animation, not the movement. The movement
+    actor is the character-data/party member with the +68 update.
+  - The charmake creates the party member; the field scenario spawns its
+    actor. The charmake path leaves the movement list empty.
+  - Next: create the character-data actor (the party member) from the
+    charmake result and put it in the movement list.
 
 ## Title scene ordering (2026-11-17)
 Goal: start the title mount before `user_main` resumes, then observe
