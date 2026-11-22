@@ -1052,8 +1052,17 @@ Findings:
     creates from the charmake result.
   - The game clears the field actor list (`0xFFFFFFFF`) each frame, so the
     model re-applies it from the present hook.
-  - Next: spawn the character-data actor (from the charmake result) rather
-    than the model, or load the field scenario.
+  - The charmake result is the **player model**: the scene actor list
+    `0x08DA1D10` holds the model parts (`0x08DB5830` = `"skin_hand_arm"`,
+    `0x08DA5900` = `"Control"` transforms). The stats/name are a menu/save
+    concern, not the field actor.
+  - The game itself installs the camera target node `0x08DA1E40` after the
+    skit (frame 1063), then clears it at frame 1136 because the scenario is
+    missing. The node's `+0x08` points at the scene model (`0x08DA1D10`).
+  - The model captures that node and restores it after the skit (state -1).
+    This runs the target update `0x08A3AA98` without crashing.
+  - The movement is still locked by the field control/controller state that
+    the scenario sets. The scenario (`scene_impl`) is the remaining piece.
 
 ## Title scene ordering (2026-11-17)
 Goal: start the title mount before `user_main` resumes, then observe

@@ -6393,6 +6393,27 @@ void register_hle(psprecomp::Runtime &runtime, std::uint32_t user_arena_start) {
                         memory.store8(kController + 28u, 1u);
                         memory.store8(kField + 0x0Cu, 0u);
                         memory.store8(kField + 0x0Du, 0xFFu);
+                        // The game itself installs the correct camera target
+                        // node after the skit (0x08DA1E40), then clears it
+                        // because the scenario is missing. Capture the last
+                        // non-synthetic target and restore it once the skit
+                        // controller has finished (state -1). The node's
+                        // +0x08 actor list points at the player scene model.
+                        static std::uint32_t capturedTarget = 0u;
+                        const std::uint32_t currentTarget =
+                            memory.load32(kLeader + 4468u);
+                        if (currentTarget != 0u &&
+                            currentTarget != 0x08DBC900u) {
+                            capturedTarget = currentTarget;
+                        }
+                        const std::uint32_t skitState =
+                            memory.contains(0x08DA0350u, 4u)
+                                ? memory.load32(0x08DA0350u) : 0u;
+                        if (skitState == 0xFFFFFFFFu &&
+                            capturedTarget != 0u) {
+                            memory.store8(kLeader + 4433u, 0x0Du);
+                            memory.store32(kLeader + 4468u, capturedTarget);
+                        }
                     }
                 }
             }
