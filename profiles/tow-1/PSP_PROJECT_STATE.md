@@ -638,7 +638,15 @@ PSPRECOMP_TOW1_REQUEST_TASK_INDEX=1
 The request completed without a crash, but the captured screen remained the
 Thomas/plaza scene; Circle pulses only advanced Thomas dialogue and never
 opened the town menu. The Guild menu is a **story-gated Town submenu**, not the
-task-level Town entry. Quest list still not captured.
+task-level Town entry.
+
+Plaza tour timing captured: the Thomas skit closes around present 38500 and
+the player becomes free. Pressing Circle while still adjacent to Thomas
+immediately reopens his dialogue. The town-menu open condition therefore needs
+a **move-away step first**: Cross through/close the skit, walk away from
+Thomas, then Circle. A run with `Down 2000` before the menu Circle exceeded
+the 40-minute capture budget before the Circle frame, so the menu/Guild list is
+still pending.
 
 The native exploration runs are headless (`PSPRECOMP_TOW1_NO_WINDOW=1`):
 there is intentionally no visible `Tow1Native` window, and each captured PPM
