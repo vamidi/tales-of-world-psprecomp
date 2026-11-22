@@ -6366,11 +6366,7 @@ void register_hle(psprecomp::Runtime &runtime, std::uint32_t user_arena_start) {
                     const std::uint32_t trigger =
                         memory.load32(kLeader + 4404u);
                     if (player != 0u && trigger != 0xFFFFFFFFu) {
-                        // Retire the opening-event trigger. The leader target
-                        // (+0x1174) is not the raw model: it must be a
-                        // trigger-compatible actor, and the field scenario
-                        // (scene_impl) is what creates that actor. Writing the
-                        // model there crashes the collision check 0x08A801E4.
+                        // Retire the opening-event trigger.
                         memory.store32(kLeader + 4404u, 0xFFFFFFFFu);
                         memory.store32(kLeader + 4408u, 0u);
                         static std::uint32_t retired = 0u;
@@ -6380,6 +6376,23 @@ void register_hle(psprecomp::Runtime &runtime, std::uint32_t user_arena_start) {
                                       << " frame=" << g_present_count
                                       << " t_us=" << g_scheduler.now_us << "\n";
                         }
+                    }
+                    // Model the scenario's actor spawn. The actor getter
+                    // (0x08A0F9C4) reads the pointer array at scene+4 and the
+                    // count at scene+8; the actor update (0x08A10A3C) walks
+                    // the field actor list at field+0x0C and drives the
+                    // controller at scene+708+id*32. Entity 0 is the player.
+                    constexpr std::uint32_t kScene = 0x08D9B920u;
+                    constexpr std::uint32_t kController = kScene + 708u;
+                    if (player != 0u && memory.contains(kController, 0x20u)) {
+                        memory.store32(kScene + 4u, entities);
+                        memory.store32(kScene + 8u, 1u);
+                        memory.store32(kController + 0u, player);
+                        memory.store8(kController + 1u, 0u);
+                        memory.store16(kController + 2u, 0u);
+                        memory.store8(kController + 28u, 1u);
+                        memory.store8(kField + 0x0Cu, 0u);
+                        memory.store8(kField + 0x0Du, 0xFFu);
                     }
                 }
             }

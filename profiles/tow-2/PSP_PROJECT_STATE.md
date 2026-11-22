@@ -1036,9 +1036,24 @@ Findings:
     scenario (`scene_impl`) is what creates them.
   - The normal field-follow state is `leader+0x1151 = 0x0D` (bit 0 set);
     the field path `0x08A185D4` uses the target at `+0x1174`.
-  - Next: implement the actor spawn (create the player actor header and
-    controller, populate the field actor list at `field+0x0C`) or load the
-    field scenario.
+  - Normal spawn path: the field loader calls the scene setter `0x08814AEC`
+    (writes `+0x3BEC..+0x3BFC`) with the scenario object in `a3`
+    (`0x08A11C48`). The actor getter `0x08A0F9C4` reads the actor-pointer
+    array at `scene+4` and the count at `scene+8`. The actor update
+    `0x08A10A3C` walks the field actor list at `field+0x0C` and drives the
+    controller at `scene+708+id*32` (model/state at `+0`, actor id `+1`,
+    model id `+2`, active `+28`).
+  - Experiment: `PSPRECOMP_TOW2_FIELD_CONTROL=1` also points `scene+4` at
+    the entity array, sets the count to 1, fills controller 0, and writes
+    the field actor list `[0, 0xFF]`. This runs the actor update (the model
+    animation at `0x0882535C`) without crashing, but the player position
+    does not change: the actor update drives the **model**, while movement
+    belongs to the **player controller/character data** that the scenario
+    creates from the charmake result.
+  - The game clears the field actor list (`0xFFFFFFFF`) each frame, so the
+    model re-applies it from the present hook.
+  - Next: spawn the character-data actor (from the charmake result) rather
+    than the model, or load the field scenario.
 
 ## Title scene ordering (2026-11-17)
 Goal: start the title mount before `user_main` resumes, then observe
