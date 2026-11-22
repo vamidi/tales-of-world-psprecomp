@@ -642,11 +642,14 @@ task-level Town entry.
 
 Plaza tour timing captured: the Thomas skit closes around present 38500 and
 the player becomes free. Pressing Circle while still adjacent to Thomas
-immediately reopens his dialogue. The town-menu open condition therefore needs
-a **move-away step first**: Cross through/close the skit, walk away from
-Thomas, then Circle. A run with `Down 2000` before the menu Circle exceeded
-the 40-minute capture budget before the Circle frame, so the menu/Guild list is
-still pending.
+immediately reopens his dialogue, and moving away did not open the town menu
+in the tested window. The real town menu is the **shop/stairs** path
+(`shop_stairs.ppm.51500`), not a Thomas-plaza action.
+
+Repeat attempts with the exact shop/stairs route and auto-Circle exceeded the
+30-minute capture budget before frame 51000; no town-menu or quest-list frame
+was produced. The remaining efficient path is a PPSSPP town save or a faster
+native capture at the shop-menu transition.
 
 The native exploration runs are headless (`PSPRECOMP_TOW1_NO_WINDOW=1`):
 there is intentionally no visible `Tow1Native` window, and each captured PPM
