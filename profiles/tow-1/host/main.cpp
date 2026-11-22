@@ -31,6 +31,33 @@ bool g_force_used = false;
 std::uint32_t g_force_target_present = 0u;
 constexpr std::uint32_t kForceReturnSentinel = 0x08804000u;
 
+std::uint32_t g_request_target_present = 0u;
+std::uint32_t g_request_task_index = 1u;
+bool g_request_used = false;
+
+void request_task_pre_dispatch(psprecomp::Runtime &runtime, psprecomp::AllegrexContext &ctx,
+                               std::uint32_t, std::int32_t) {
+    if (g_request_used ||
+        tow1::window_post_osk_present_count() < g_request_target_present) return;
+    g_request_used = true;
+    const psprecomp::AllegrexContext saved = ctx;
+    psprecomp::AllegrexContext call = ctx;
+    call.pc = 0x088062A0u;   // task-request setter: next request = a0
+    call.gpr[4] = g_request_task_index;
+    call.gpr[29] = ctx.gpr[29] - 0x2000u;
+    call.gpr[31] = kForceReturnSentinel;
+    unsigned steps = 0u;
+    while (call.pc != kForceReturnSentinel && steps < 32u) {
+        if (!runtime.invoke_isolated_aot(call.pc, call)) break;
+        ++steps;
+    }
+    ctx = saved;
+    std::cerr << "[tow1-request-task] index=" << g_request_task_index
+              << " at present=" << tow1::window_post_osk_present_count()
+              << " end_pc=" << psprecomp::hex32(call.pc)
+              << " steps=" << steps << "\n";
+}
+
 void force_town_pre_dispatch(psprecomp::Runtime &runtime, psprecomp::AllegrexContext &ctx,
                              std::uint32_t, std::int32_t) {
     if (!g_force_used && !g_force_active &&
@@ -201,6 +228,22 @@ int main(int argc, char **argv) {
             psprecomp::set_runtime_pre_dispatch_hook(&force_town_pre_dispatch);
             std::cerr << "[tow1-force-town] armed at post-OSK present="
                       << g_force_target_present << "\n";
+        }
+        if (const char *request_text =
+                std::getenv("PSPRECOMP_TOW1_REQUEST_TASK_AT_PRESENT");
+            request_text != nullptr && *request_text != '\0') {
+            g_request_target_present = static_cast<std::uint32_t>(
+                std::strtoul(request_text, nullptr, 0));
+            if (const char *index_text =
+                    std::getenv("PSPRECOMP_TOW1_REQUEST_TASK_INDEX");
+                index_text != nullptr && *index_text != '\0') {
+                g_request_task_index = static_cast<std::uint32_t>(
+                    std::strtoul(index_text, nullptr, 0));
+            }
+            psprecomp::set_runtime_pre_dispatch_hook(&request_task_pre_dispatch);
+            std::cerr << "[tow1-request-task] armed index="
+                      << g_request_task_index << " at present="
+                      << g_request_target_present << "\n";
         }
         tow1::window_start();
         runtime.run(elf.runtime_entry(), max_dispatches);

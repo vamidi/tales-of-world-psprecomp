@@ -625,8 +625,20 @@ The small request API is:
 The watch also recorded the observed task sequence at the 30000-frame town
 route: current values 7 -> 0 -> 1 -> 9 -> 5 -> 2. Requesting index 1 in
 PPSSPP at the opening produced a black frame/reset; the request must be made
-from a valid task state with the right 1-based table index. The Guild quest
-list is still not captured.
+from a valid task state with the right 1-based table index.
+
+The setter was then invoked from the native host at the 30000-frame Town state:
+
+```text
+PSPRECOMP_TOW1_REQUEST_TASK_AT_PRESENT=30000
+PSPRECOMP_TOW1_REQUEST_TASK_INDEX=1
+[tow1-request-task] index=1 end_pc=0x08804000 steps=1
+```
+
+The request completed without a crash, but the captured screen remained the
+Thomas/plaza scene; Circle pulses only advanced Thomas dialogue and never
+opened the town menu. The Guild menu is a **story-gated Town submenu**, not the
+task-level Town entry. Quest list still not captured.
 
 The native exploration runs are headless (`PSPRECOMP_TOW1_NO_WINDOW=1`):
 there is intentionally no visible `Tow1Native` window, and each captured PPM
@@ -661,6 +673,11 @@ If the game does not progress in PPSSPP either, install PSP firmware
   `PSPRECOMP_WATCH_WRITE_SIZE=0x10` — log every guest write overlapping the
   task-stack header, including thread name, dispatch PC, operation, address,
   old and new values.
+- `PSPRECOMP_TOW1_REQUEST_TASK_AT_PRESENT=N` and
+  `PSPRECOMP_TOW1_REQUEST_TASK_INDEX=I` — invoke the task-request setter
+  `0x088062A0` with `a0=I` at post-OSK present `N`. Verified at 30000 with
+  index 1; transitions the Town task but does not open the story-gated Guild
+  submenu.
 - `PSPRECOMP_TOW1_GE_SKIP_RASTER_UNTIL_PRESENT=N` — keep GE list execution and
   guest synchronization, but skip the expensive software raster until post-OSK
   present `N`; used to fast-forward long town routes then capture.
