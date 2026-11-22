@@ -1073,8 +1073,18 @@ Findings:
     actor is the character-data/party member with the +68 update.
   - The charmake creates the party member; the field scenario spawns its
     actor. The charmake path leaves the movement list empty.
-  - Next: create the character-data actor (the party member) from the
-    charmake result and put it in the movement list.
+  - The charmake confirm allocates the **25520-byte character preview**
+    (`0x08A76974(25520)`) and constructs it with the sprite vtable
+    `0x08C6B7C8` (`0x089F6740`). The preview is a sprite, not the movement
+    actor.
+  - The party member is the entry at `[character+1892] + index*56`
+    (`0x089F6098`); its `+1940` is the data pointer and `+1944` the flag.
+  - The player control `0x08DA0880` has the movement list (`+0xE4`), the
+    state (`+0x2738` = 0), and the update `0x0882F608`. The list actors'
+    `+68` is the update; the model entity's `+68` is the animation.
+  - The movement is disabled because the player control update
+    `0x0882F608` is not called. The next step is to call it (or find its
+    field-UI/scene-manager caller).
 
 ## Title scene ordering (2026-11-17)
 Goal: start the title mount before `user_main` resumes, then observe

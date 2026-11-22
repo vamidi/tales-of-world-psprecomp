@@ -498,6 +498,8 @@ std::uint32_t g_title_arc_bytes = 0u;
 std::uint64_t g_present_count = 0u;
 // Set when the raw multi-megabyte charmake archive read has completed.
 bool g_charmake_archive_loaded = false;
+// The 25520-byte character object allocated by the charmake confirm.
+std::uint32_t g_character_object = 0u;
 
 constexpr std::uint32_t kIsolatedReturnSentinel = 0xDEADBEEFu;
 void inspect_ezbind_archive(const std::filesystem::path &host_path,
@@ -5122,10 +5124,27 @@ void input_get_trace(psprecomp::Runtime &runtime,
     }
 }
 
+// Capture the charmake confirm's 25520-byte character allocation.
+void character_alloc_trace(psprecomp::Runtime &runtime,
+                           psprecomp::AllegrexContext &ctx) {
+    const std::uint32_t size = ctx.gpr[4];
+    auto view = runtime.memory().aot_fast_view();
+    recomp_unit_0313_entry(runtime, ctx, 86u, view);
+    if (size == 25520u) {
+        g_character_object = ctx.gpr[2];
+        std::cerr << "[tow2-charmake] character object="
+                  << psprecomp::hex32(g_character_object) << "\n";
+    }
+}
+
 void register_overrides(psprecomp::Runtime &runtime) {
     if (std::getenv("PSPRECOMP_TOW2_INPUT_GET_DIAG") != nullptr) {
         runtime.register_function(0x08A61D94u, &input_get_trace,
                                   "tow2_input_get_trace");
+    }
+    if (std::getenv("PSPRECOMP_TOW2_FIELD_CONTROL") != nullptr) {
+        runtime.register_function(0x08A76974u, &character_alloc_trace,
+                                  "tow2_character_alloc_trace");
     }
     if (std::getenv("PSPRECOMP_TOW2_CHARMAKE_WAIT") == nullptr ||
         std::getenv("PSPRECOMP_TOW2_CHARMAKE_COMPLETE") != nullptr ||
@@ -6395,11 +6414,20 @@ void register_hle(psprecomp::Runtime &runtime, std::uint32_t user_arena_start) {
                         memory.store8(kField + 0x0Du, 0xFFu);
                         // Player-control movement list: 0x08DA0880+0xE4 is
                         // walked by 0x0882F650 and drives each actor through
-                        // its vtable +68. The scenario fills it with the
-                        // player actor; point it at the entity array and set
-                        // the player entity's control mode (+0xA0 = 0x80).
-                        memory.store32(0x08DA0964u, 0x08F37000u);
-                        memory.store32(player + 0xA0u, 0x80u);
+                        // its vtable +68. The charmake confirm allocates the
+                        // 25520-byte character object; use it as the movement
+                        // actor once captured.
+                        constexpr std::uint32_t kListBuffer = 0x09F80000u;
+                        if (g_character_object != 0u &&
+                            memory.contains(kListBuffer, 4u) &&
+                            memory.contains(g_character_object + 0xA0u, 4u)) {
+                            memory.store32(kListBuffer, g_character_object);
+                            memory.store32(0x08DA0964u, kListBuffer);
+                            memory.store32(g_character_object + 0xA0u, 0x80u);
+                        } else {
+                            memory.store32(0x08DA0964u, 0x08F37000u);
+                            memory.store32(player + 0xA0u, 0x80u);
+                        }
                         // The game itself installs the correct camera target
                         // node after the skit (0x08DA1E40), then clears it
                         // because the scenario is missing. Capture the last
