@@ -595,9 +595,38 @@ clean opening state.
 
 A direct MIPS scan of the code segment found **no** absolute or `gp`-relative
 reference to `0x08D42238`, `0x08D422A8`, or the task table. The consumer is
-reached through an indirect/global pointer. The next useful diagnostic is a
-native guest-memory write watch on `0x08D422A8..0x08D422B4`, logging the
-current dispatch PC; that will name the task push/request function.
+reached through an indirect/global pointer.
+
+The existing native write watch was used:
+
+```text
+PSPRECOMP_WATCH_WRITE=0x08D422A8
+PSPRECOMP_WATCH_WRITE_SIZE=0x10
+```
+
+It named the consumer:
+
+```text
+thread ModuleDispatcher uid=5
+pc=0x0880624C  writes count/current
+pc=0x08807434  writes count/current
+pc=0x088069D0  writes header
+```
+
+The small request API is:
+
+```text
+0x08806270  getter
+0x08806280  pending/current getter
+0x088062A0  setter: sw a0, -0xB4C(v1)
+             -> 0x08D422B4 = requested task index
+```
+
+The watch also recorded the observed task sequence at the 30000-frame town
+route: current values 7 -> 0 -> 1 -> 9 -> 5 -> 2. Requesting index 1 in
+PPSSPP at the opening produced a black frame/reset; the request must be made
+from a valid task state with the right 1-based table index. The Guild quest
+list is still not captured.
 
 The native exploration runs are headless (`PSPRECOMP_TOW1_NO_WINDOW=1`):
 there is intentionally no visible `Tow1Native` window, and each captured PPM
@@ -628,6 +657,10 @@ If the game does not progress in PPSSPP either, install PSP firmware
 - `PSPRECOMP_TOW1_HEAP_DIAG=1`
 - `PSPRECOMP_GE_STATS=1`
 - `PSPRECOMP_GE_DIAG=1`
+- `PSPRECOMP_WATCH_WRITE=0x08D422A8` and
+  `PSPRECOMP_WATCH_WRITE_SIZE=0x10` — log every guest write overlapping the
+  task-stack header, including thread name, dispatch PC, operation, address,
+  old and new values.
 - `PSPRECOMP_TOW1_GE_SKIP_RASTER_UNTIL_PRESENT=N` — keep GE list execution and
   guest synchronization, but skip the expensive software raster until post-OSK
   present `N`; used to fast-forward long town routes then capture.
