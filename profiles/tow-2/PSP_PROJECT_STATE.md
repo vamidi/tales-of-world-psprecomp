@@ -2481,3 +2481,106 @@ dereferences it as a pointer. `title.arc` is still not opened.
 - Next test: inspect `0x08A76EE8` and the title object/task argument contract
   (`a0=5` vs the object at `0x08DA1A70`), fix the child argument/state, then
   rerun until `title.arc` opens.
+
+## 26. Field player actor is absent (2026-11-22)
+
+### The previously assumed "player-control update" does not exist
+
+Earlier tracing treated `0x08DA0880` as the field player controller with vtable
+`0x08C45700` and update `[+0x44] = 0x0882F608`. That mapping is wrong:
+
+- `0x08C45700` is a table of **relocated data pointers**, not code pointers.
+  Its slot 17 holds the raw offset `0x0002B608`, i.e. guest `0x0882F608`.
+- Guest `0x0882F608` is vaddr `0x0002B608`. Ghidra's function map shows
+  `FUN_0002b5c4` and `FUN_0002b6f8` with a gap between them, so this address is
+  not inside any function; the bytes there are a pointer/size table
+  (`0x000843B8, 4, 0x000843C4, 4`).
+- The object at `0x08DA0880` holds `+0x08 = 0x00046BC0` and
+  `+0x0C = 0x00047000`, which are unrelocated sizes, not pointers.
+
+So there is no player-control state machine at that address and no caller to
+model. Any future note that refers to "player control `0x08DA0880`" should be
+treated as retracted.
+
+### What the field actually contains
+
+Traced with a new `PSPRECOMP_TOW2_TRACE_A0` diagnostic (logs every guest
+function entered with a listed object in `a0`, with its `ra`):
+
+- Field object `0x09FA02F0` (vtable `0x08C604C8`) is ticked every frame by
+  `0x08962CF0` and `0x0897322C` with `a0 = field`, `a1 = 0x81`.
+- `field+0x04 = 0x08F37000` is the entity pointer array; `field+0x08 = 12`.
+- The 12 entities are `0x08DBC820 + index*0x350`:
+  `0x08DBC820, 0x08DBCB70, 0x08DBCEC0, 0x08DBD210, 0x08DBD560, 0x08DBD8B0,
+  0x08DBDC00, 0x08DBDF50, 0x08DBE2A0, 0x08DBE5F0, 0x08DBE940, 0x08DBEC90`.
+- Only entities 0, 1, 2 and 11 ever receive method calls. Entity 0 gets a
+  per-frame component pass through `0x08A164F0` (vaddr `0x002124F0`, walks the
+  component vector at `entity+0x29C` and calls each `vtable+0x10`). Entity 2
+  gets a per-frame pass through `0x08A801E4`.
+- Entity 0 is a model with embedded node objects (`entity+0xE0` has vtable
+  `0x08C606BC`; its `+0x04/+0x08/+0x0C` hold the spawn position
+  `(1.1414, 1.0702, 0.2548)`).
+- `0x08DBC904` (entity 0 node `+0x04`) is written exactly once, by dispatch
+  `0x08827A9C`, and never again.
+
+### Entities are static scenery, not characters
+
+With `PSPRECOMP_TOW2_DUMP_AT` (now accepts `;`-separated specs) the full 848
+bytes of entities 0, 1 and 2 were captured at two guest times while the d-pad
+and analog stick were held:
+
+```text
+entity 0  62.5s -> 78.5s : 0 changed lines (53/53 identical)
+entity 1  62.5s -> 78.5s : 0 changed lines
+entity 2  62.5s -> 78.5s : 0 changed lines
+leader    60.0s -> 110.0s: camera position and rotation matrix changed
+```
+
+`PSPRECOMP_TOW2_MEM_DIFF=48000000:60000000` over `0x08D00000+3 MiB` reports
+`changed_words=3351`, confined to pages `0x08D0`, `0x08D4`, `0x08D7`, `0x08DA`
+(render-list and camera churn) — nothing in the entity pool.
+
+Conclusion: after charmake the field renders 12 static props and a live camera,
+but no player character actor is ever created. Because the charmake path
+bypasses the scenario load (`scene_impl = 0`, `scene_id = 0xFFFF`), the
+scenario's actor spawn never runs, so there is no actor to move and no
+controller to call. Movement cannot be unlocked by prompting an existing
+update; the player actor has to be created or the scenario load restored.
+
+### Skit pacing correction
+
+The opening skit does advance both lines, but only when input arrives and only
+on the field's own clock:
+
+```text
+[tow2-skit] advance object=0x08DC1810 position=0x00000157 frame=1137 t_us=41084332
+[tow2-skit] advance object=0x08DA1520 position=0x000000D8 frame=1216 t_us=44065246
+```
+
+Between those advances the whole field is paused: entity and camera words are
+byte-identical for 24 s when no button is pressed. `0x08DA0340` is **not** the
+skit controller (it stays `+0x08 = 0`, `+0x10 = -1` throughout), so the
+`[tow2-skit]` model should key off the text object directly rather than
+`0x08DA0340+0x08`.
+
+### Diagnostics added
+
+- `PSPRECOMP_TOW2_TRACE_A0="0xADDR,..."` — every function entered with that
+  object in `a0`, deduped per `pc`, with call counts. This is how the
+  per-frame update of an object is located.
+- `PSPRECOMP_TOW2_DUMP_AT` now accepts `;`-separated
+  `t_us:address:length` specs.
+- `PSPRECOMP_TOW2_SKIT_DIAG=1` — periodic skit controller/line dump.
+- The charmake pump log no longer floods (sampled instead of every call after
+  10 s).
+- `PSPRECOMP_WATCH_WRITE` / `PSPRECOMP_WATCH_WRITE_SIZE` already reported the
+  dispatch PC of the writer; that is what proved `0x08DBC904` is written once.
+
+### Next action
+
+Restore the field scenario instead of synthesising a controller: find what
+`0x08AA33C0` memsets and why the charmake return path leaves `scene_impl = 0`,
+then either re-run the normal field-scene load (`0x08814AEC` / the loader call
+at `0x08A11C48`) or build the actor-spawn step by hand (create the 12-entry
+entity pool entry for the party member, attach the character data from
+`[character+1892] + index*56`, and hand it to `0x08A164F0`).

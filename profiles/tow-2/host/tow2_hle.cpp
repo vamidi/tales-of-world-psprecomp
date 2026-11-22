@@ -589,6 +589,71 @@ void scene_caller_hook(psprecomp::Runtime &runtime,
             break;
         }
     }
+    // Log every guest function that is entered with one of the listed objects
+    // in a0, i.e. every caller/method of that object. This is how a state
+    // machine's update entry and its call sites are located without guessing.
+    //   PSPRECOMP_TOW2_TRACE_A0="0x08DA0880,0x09FA1100"
+    static const std::vector<std::uint32_t> trace_a0s = [] {
+        std::vector<std::uint32_t> targets;
+        const char *text = std::getenv("PSPRECOMP_TOW2_TRACE_A0");
+        if (text == nullptr || *text == '\0') return targets;
+        const char *cursor = text;
+        while (*cursor != '\0') {
+            while (*cursor == ',' || *cursor == ' ' || *cursor == '\n')
+                ++cursor;
+            if (*cursor == '\0') break;
+            char *end = nullptr;
+            const unsigned long value = std::strtoul(cursor, &end, 0);
+            if (end == cursor) break;
+            targets.push_back(static_cast<std::uint32_t>(value));
+            cursor = end;
+        }
+        return targets;
+    }();
+    if (!trace_a0s.empty()) {
+        for (const std::uint32_t target : trace_a0s) {
+            if (ctx.gpr[4] != target) continue;
+            struct A0Site {
+                std::uint32_t pc;
+                std::uint32_t ra;
+                std::uint64_t count;
+            };
+            static std::vector<A0Site> sites;
+            static bool summary_installed = false;
+            if (!summary_installed) {
+                summary_installed = true;
+                std::atexit([] {
+                    std::cerr << "[tow2-a0] summary sites=" << sites.size() << "\n";
+                    for (const A0Site &site : sites) {
+                        std::cerr << "[tow2-a0]   pc=" << psprecomp::hex32(site.pc)
+                                  << " ra=" << psprecomp::hex32(site.ra)
+                                  << " calls=" << site.count << "\n";
+                    }
+                });
+            }
+            A0Site *site = nullptr;
+            for (A0Site &candidate : sites) {
+                if (candidate.pc == dispatch_pc) { site = &candidate; break; }
+            }
+            if (site == nullptr) {
+                sites.push_back(A0Site{dispatch_pc, ctx.gpr[31], 0u});
+                site = &sites.back();
+            }
+            const std::uint64_t seen = ++site->count;
+            if (seen <= 3u || seen % 500u == 0u) {
+                std::cerr << "[tow2-a0] object=" << psprecomp::hex32(target)
+                          << " pc=" << psprecomp::hex32(dispatch_pc)
+                          << " calls=" << seen
+                          << " uid=" << thread_uid
+                          << " t_us=" << g_scheduler.now_us
+                          << " ra=" << psprecomp::hex32(ctx.gpr[31])
+                          << " a1=" << psprecomp::hex32(ctx.gpr[5])
+                          << " a2=" << psprecomp::hex32(ctx.gpr[6])
+                          << " a3=" << psprecomp::hex32(ctx.gpr[7]) << "\n";
+            }
+            break;
+        }
+    }
     static const int trace_uid = [] {
         const char *text = std::getenv("PSPRECOMP_TOW2_TRACE_UID");
         if (text == nullptr || *text == '\0') return -1;
@@ -3631,6 +3696,9 @@ void sas_output(psprecomp::Runtime &rt, psprecomp::AllegrexContext &ctx) {
     // bits directly after every grain. This must not be gated on the movie
     // state: title/menu effects also use this path.
     signal_named_event_flag(rt, "cSoundEffect", 0x15u);
+    // The skit voice lines wait on the voice manager too. The silent SAS
+    // has no voices, so publish completion for cSoundVoice as well.
+    signal_named_event_flag(rt, "cSoundVoice", 0x15u);
     delay_current_thread(rt, ctx, microseconds);
     ctx.set_gpr(2, 0u);
 }
@@ -4900,49 +4968,72 @@ void scan_word_present(psprecomp::Runtime &runtime) {
               << " t_us=" << g_scheduler.now_us << "\n";
 }
 
-// One-shot hex dump of a guest region at a guest time.
-//   PSPRECOMP_TOW2_DUMP_AT="t_us:address:length"
+// One-shot hex dump of guest regions at a guest time. Semicolon-separated
+// specs share one run:
+//   PSPRECOMP_TOW2_DUMP_AT="t_us:address:length[;t_us:address:length...]"
 void dump_at_present(psprecomp::Runtime &runtime) {
+    struct DumpSpec {
+        std::uint64_t at_us;
+        std::uint32_t address;
+        std::uint32_t length;
+        bool done;
+    };
+    static std::vector<DumpSpec> specs;
     static bool parsed = false;
-    static bool done = false;
-    static std::uint64_t at_us = 0u;
-    static std::uint32_t address = 0u;
-    static std::uint32_t length = 0u;
+    static bool all_done = false;
     if (!parsed) {
         parsed = true;
         const char *text = std::getenv("PSPRECOMP_TOW2_DUMP_AT");
         if (text != nullptr && *text != '\0') {
-            unsigned long long at = 0u;
-            unsigned int addr = 0u;
-            unsigned int len = 0u;
-            if (std::sscanf(text, "%llu:%i:%i", &at, &addr, &len) >= 3 &&
-                len != 0u) {
-                at_us = at;
-                address = addr;
-                length = (len + 3u) & ~3u;
+            const char *cursor = text;
+            while (*cursor != '\0') {
+                while (*cursor == ';' || *cursor == ' ' || *cursor == '\n')
+                    ++cursor;
+                if (*cursor == '\0') break;
+                unsigned long long at = 0u;
+                unsigned int addr = 0u;
+                unsigned int len = 0u;
+                int consumed = 0;
+                if (std::sscanf(cursor, "%llu:%i:%i%n", &at, &addr, &len,
+                                &consumed) >= 3 &&
+                    len != 0u && consumed > 0) {
+                    specs.push_back(DumpSpec{
+                        at, addr, (len + 3u) & ~3u, false});
+                    cursor += consumed;
+                } else {
+                    break;
+                }
             }
         }
-        done = length == 0u;
+        all_done = specs.empty();
     }
-    if (done || g_scheduler.now_us < at_us) return;
-    done = true;
-    if (!runtime.memory().contains(address, length)) {
-        std::cerr << "[tow2-dump] range " << psprecomp::hex32(address)
-                  << "+" << length << " not mapped\n";
-        return;
-    }
-    std::cerr << "[tow2-dump] " << psprecomp::hex32(address) << "+" << length
-              << " t_us=" << g_scheduler.now_us << "\n";
-    for (std::uint32_t offset = 0u; offset < length; offset += 16u) {
-        std::cerr << "[tow2-dump] " << psprecomp::hex32(address + offset) << ":";
-        for (std::uint32_t word = 0u; word < 16u && offset + word < length;
-             word += 4u) {
-            std::cerr << " "
-                      << psprecomp::hex32(
-                             runtime.memory().load32(address + offset + word));
+    if (all_done) return;
+    bool pending = false;
+    for (DumpSpec &spec : specs) {
+        if (spec.done) continue;
+        if (g_scheduler.now_us < spec.at_us) { pending = true; continue; }
+        spec.done = true;
+        const std::uint32_t address = spec.address;
+        const std::uint32_t length = spec.length;
+        if (!runtime.memory().contains(address, length)) {
+            std::cerr << "[tow2-dump] range " << psprecomp::hex32(address)
+                      << "+" << length << " not mapped\n";
+            continue;
         }
-        std::cerr << "\n";
+        std::cerr << "[tow2-dump] " << psprecomp::hex32(address) << "+" << length
+                  << " t_us=" << g_scheduler.now_us << "\n";
+        for (std::uint32_t offset = 0u; offset < length; offset += 16u) {
+            std::cerr << "[tow2-dump] " << psprecomp::hex32(address + offset) << ":";
+            for (std::uint32_t word = 0u; word < 16u && offset + word < length;
+                 word += 4u) {
+                std::cerr << " "
+                          << psprecomp::hex32(
+                                 runtime.memory().load32(address + offset + word));
+            }
+            std::cerr << "\n";
+        }
     }
+    all_done = !pending;
 }
 
 // Trace the charmake setup wait loop: 0x08A703D8 is the pump/sleep and
@@ -4952,7 +5043,9 @@ void charmake_wait_pump(psprecomp::Runtime &runtime,
                         psprecomp::AllegrexContext &ctx) {
     static std::uint64_t seen = 0u;
     const std::uint32_t ra = ctx.gpr[31];
-    if (seen++ < 5u || g_scheduler.now_us >= 10000000u) {
+    // This pump is the game's per-frame sleep, so a time-gated log floods the
+    // console for hours of emulated time. Keep the first few and then sample.
+    if (seen++ < 5u || (g_scheduler.now_us >= 10000000u && seen % 2000000u == 0u)) {
         std::cerr << "[tow2-wait] pump ra=" << psprecomp::hex32(ra)
                   << " a0=" << psprecomp::hex32(ctx.gpr[4])
                   << " uid=" << g_scheduler.current_uid
@@ -5177,7 +5270,8 @@ void register_hle(psprecomp::Runtime &runtime, std::uint32_t user_arena_start) {
         std::getenv("PSPRECOMP_TOW2_TRACE_PCS") != nullptr ||
         std::getenv("PSPRECOMP_TOW2_TRACE_RET") != nullptr ||
         std::getenv("PSPRECOMP_TOW2_TRACE_UID") != nullptr ||
-        std::getenv("PSPRECOMP_TOW2_TRACE_RA") != nullptr) {
+        std::getenv("PSPRECOMP_TOW2_TRACE_RA") != nullptr ||
+        std::getenv("PSPRECOMP_TOW2_TRACE_A0") != nullptr) {
         psprecomp::set_runtime_pre_dispatch_hook(&scene_caller_hook);
         if (std::getenv("PSPRECOMP_TOW2_SCENE_WATCH") != nullptr ||
             std::getenv("PSPRECOMP_TOW2_SCENE_TRACE") != nullptr ||
@@ -6367,6 +6461,45 @@ void register_hle(psprecomp::Runtime &runtime, std::uint32_t user_arena_start) {
                     }
                 }
             }
+            // Skit state diagnostic: the opening skit blocks the whole field
+            // tick, so print the controller/line state periodically to see
+            // which wait the dialogue is parked on.
+            //   PSPRECOMP_TOW2_SKIT_DIAG=1
+            if (std::getenv("PSPRECOMP_TOW2_SKIT_DIAG") != nullptr &&
+                g_present_count % 30u == 0u) {
+                auto &memory = rt.memory();
+                constexpr std::uint32_t kSkitController = 0x08DA0340u;
+                constexpr std::uint32_t kLeader = 0x09FA1100u;
+                const std::uint32_t object =
+                    memory.contains(kSkitController + 8u, 4u)
+                        ? memory.load32(kSkitController + 8u) : 0u;
+                std::cerr << "[tow2-skitdiag] frame=" << g_present_count
+                          << " t_us=" << g_scheduler.now_us
+                          << " ctrl+8=" << psprecomp::hex32(object)
+                          << " ctrl+0C="
+                          << psprecomp::hex32(memory.load32(kSkitController + 0x0Cu))
+                          << " ctrl+10="
+                          << psprecomp::hex32(memory.load32(kSkitController + 0x10u))
+                          << " ctrl+14="
+                          << psprecomp::hex32(memory.load32(kSkitController + 0x14u));
+                if (object != 0u && memory.contains(object + 0x71Cu, 4u)) {
+                    std::cerr << " obj+74="
+                              << psprecomp::hex32(memory.load32(object + 0x74u))
+                              << " obj+11C="
+                              << psprecomp::hex32(memory.load32(object + 0x11Cu))
+                              << " obj+12C="
+                              << static_cast<unsigned>(memory.load8(object + 0x12Cu))
+                              << " obj+12D="
+                              << static_cast<unsigned>(memory.load8(object + 0x12Du))
+                              << " obj+718="
+                              << static_cast<unsigned>(memory.load8(object + 0x718u));
+                }
+                std::cerr << " leader+1151="
+                          << static_cast<unsigned>(memory.load8(kLeader + 4433u))
+                          << " leader+1174="
+                          << psprecomp::hex32(memory.load32(kLeader + 4468u))
+                          << "\n";
+            }
             // Field control model: the charmake -> field transition zeroes
             // the scene manager and never attaches the player to the leader
             // (leader+0x1151 bit 0 stays set, leader+0x1174 is null). Reattach
@@ -6444,10 +6577,13 @@ void register_hle(psprecomp::Runtime &runtime, std::uint32_t user_arena_start) {
                         const std::uint32_t skitState =
                             memory.contains(0x08DA0350u, 4u)
                                 ? memory.load32(0x08DA0350u) : 0u;
-                        if (skitState == 0xFFFFFFFFu &&
-                            capturedTarget != 0u) {
+                        if (skitState == 0xFFFFFFFFu) {
+                            // 0x08A3AA98 expects the target-list node
+                            // (0x08DA1DD0), not the leader target node
+                            // (0x08DA1E40, which it would treat as a list
+                            // with count 0).
                             memory.store8(kLeader + 4433u, 0x0Du);
-                            memory.store32(kLeader + 4468u, capturedTarget);
+                            memory.store32(kLeader + 4468u, 0x08DA1DD0u);
                         }
                     }
                 }
@@ -6737,6 +6873,155 @@ void register_hle(psprecomp::Runtime &runtime, std::uint32_t user_arena_start) {
                 return;
             }
             g_volatile_memory_locked = false;
+            ctx.set_gpr(2, 0u);
+        });
+
+    // sceAtrac3plus (silent voice): report every stream as fully decoded so
+    // the sound manager's voice-completion wait does not stall skits.
+    runtime.register_hle("sceAtrac3plus", 0x780F88D1u, // sceAtracGetAtracID
+        [](psprecomp::Runtime &, psprecomp::AllegrexContext &ctx) {
+            ctx.set_gpr(2, 1u);
+        });
+    runtime.register_hle("sceAtrac3plus", 0x7A20E7AFu, // sceAtracSetDataAndGetID
+        [](psprecomp::Runtime &, psprecomp::AllegrexContext &ctx) {
+            ctx.set_gpr(2, 1u);
+        });
+    runtime.register_hle("sceAtrac3plus", 0x6A8C3CD5u, // sceAtracDecodeData
+        [](psprecomp::Runtime &rt, psprecomp::AllegrexContext &ctx) {
+            const std::uint32_t out_n = ctx.gpr[6];
+            const std::uint32_t out_end = ctx.gpr[7];
+            if (out_n != 0u && rt.memory().contains(out_n, 4u))
+                rt.memory().store32(out_n, 0u);
+            if (out_end != 0u && rt.memory().contains(out_end, 4u))
+                rt.memory().store32(out_end, 1u);
+            if (rt.memory().contains(ctx.gpr[29] + 16u, 4u)) {
+                const std::uint32_t out_remain =
+                    rt.memory().load32(ctx.gpr[29] + 16u);
+                if (out_remain != 0u && rt.memory().contains(out_remain, 4u))
+                    rt.memory().store32(out_remain, 0u);
+            }
+            ctx.set_gpr(2, 0u);
+        });
+    runtime.register_hle("sceAtrac3plus", 0x9AE849A7u, // sceAtracGetRemainFrame
+        [](psprecomp::Runtime &rt, psprecomp::AllegrexContext &ctx) {
+            if (ctx.gpr[5] != 0u && rt.memory().contains(ctx.gpr[5], 4u))
+                rt.memory().store32(ctx.gpr[5], 0u);
+            ctx.set_gpr(2, 0u);
+        });
+    runtime.register_hle("sceAtrac3plus", 0x36FAABFBu, // sceAtracGetNextSample
+        [](psprecomp::Runtime &rt, psprecomp::AllegrexContext &ctx) {
+            if (ctx.gpr[5] != 0u && rt.memory().contains(ctx.gpr[5], 4u))
+                rt.memory().store32(ctx.gpr[5], 0u);
+            ctx.set_gpr(2, 0u);
+        });
+    runtime.register_hle("sceAtrac3plus", 0xA2BBA8BEu, // sceAtracGetSoundSample
+        [](psprecomp::Runtime &rt, psprecomp::AllegrexContext &ctx) {
+            if (ctx.gpr[5] != 0u && rt.memory().contains(ctx.gpr[5], 4u))
+                rt.memory().store32(ctx.gpr[5], 0u);
+            if (ctx.gpr[6] != 0u && rt.memory().contains(ctx.gpr[6], 4u))
+                rt.memory().store32(ctx.gpr[6], 0u);
+            ctx.set_gpr(2, 0u);
+        });
+    runtime.register_hle("sceAtrac3plus", 0x61EB33F5u, // sceAtracReleaseAtracID
+        [](psprecomp::Runtime &, psprecomp::AllegrexContext &ctx) {
+            ctx.set_gpr(2, 0u);
+        });
+    runtime.register_hle("sceAtrac3plus", 0x868120B5u, // sceAtracSetLoopNum
+        [](psprecomp::Runtime &, psprecomp::AllegrexContext &ctx) {
+            ctx.set_gpr(2, 0u);
+        });
+    runtime.register_hle("sceAtrac3plus", 0xD6A5F2F7u, // sceAtracGetMaxSample
+        [](psprecomp::Runtime &rt, psprecomp::AllegrexContext &ctx) {
+            if (ctx.gpr[5] != 0u && rt.memory().contains(ctx.gpr[5], 4u))
+                rt.memory().store32(ctx.gpr[5], 1024u);
+            ctx.set_gpr(2, 0u);
+        });
+    runtime.register_hle("sceAtrac3plus", 0x31668BAAu, // sceAtracGetChannel
+        [](psprecomp::Runtime &rt, psprecomp::AllegrexContext &ctx) {
+            if (ctx.gpr[5] != 0u && rt.memory().contains(ctx.gpr[5], 4u))
+                rt.memory().store32(ctx.gpr[5], 2u);
+            ctx.set_gpr(2, 0u);
+        });
+    runtime.register_hle("sceAtrac3plus", 0xA554A158u, // sceAtracGetBitrate
+        [](psprecomp::Runtime &rt, psprecomp::AllegrexContext &ctx) {
+            if (ctx.gpr[5] != 0u && rt.memory().contains(ctx.gpr[5], 4u))
+                rt.memory().store32(ctx.gpr[5], 0u);
+            ctx.set_gpr(2, 0u);
+        });
+    runtime.register_hle("sceAtrac3plus", 0xFAA4F89Bu, // sceAtracGetLoopStatus
+        [](psprecomp::Runtime &rt, psprecomp::AllegrexContext &ctx) {
+            if (ctx.gpr[5] != 0u && rt.memory().contains(ctx.gpr[5], 4u))
+                rt.memory().store32(ctx.gpr[5], 0u);
+            if (ctx.gpr[6] != 0u && rt.memory().contains(ctx.gpr[6], 4u))
+                rt.memory().store32(ctx.gpr[6], 0u);
+            ctx.set_gpr(2, 0u);
+        });
+    runtime.register_hle("sceAtrac3plus", 0xE23E3A35u, // sceAtracGetNextDecodePosition
+        [](psprecomp::Runtime &rt, psprecomp::AllegrexContext &ctx) {
+            if (ctx.gpr[5] != 0u && rt.memory().contains(ctx.gpr[5], 4u))
+                rt.memory().store32(ctx.gpr[5], 0u);
+            ctx.set_gpr(2, 0u);
+        });
+    runtime.register_hle("sceAtrac3plus", 0xCA3CA3D2u, // sceAtracGetBufferInfoForReseting
+        [](psprecomp::Runtime &rt, psprecomp::AllegrexContext &ctx) {
+            if (ctx.gpr[5] != 0u && rt.memory().contains(ctx.gpr[5], 32u))
+                rt.memory().zero(ctx.gpr[5], 32u);
+            ctx.set_gpr(2, 0u);
+        });
+    runtime.register_hle("sceAtrac3plus", 0x644E5607u, // sceAtracResetPlayPosition
+        [](psprecomp::Runtime &, psprecomp::AllegrexContext &ctx) {
+            ctx.set_gpr(2, 0u);
+        });
+    runtime.register_hle("sceAtrac3plus", 0xE88F759Bu, // sceAtracGetInternalErrorInfo
+        [](psprecomp::Runtime &rt, psprecomp::AllegrexContext &ctx) {
+            if (ctx.gpr[5] != 0u && rt.memory().contains(ctx.gpr[5], 4u))
+                rt.memory().store32(ctx.gpr[5], 0u);
+            ctx.set_gpr(2, 0u);
+        });
+    runtime.register_hle("sceAtrac3plus", 0x5D268707u, // sceAtracGetStreamDataInfo
+        [](psprecomp::Runtime &rt, psprecomp::AllegrexContext &ctx) {
+            if (ctx.gpr[5] != 0u && rt.memory().contains(ctx.gpr[5], 4u))
+                rt.memory().store32(ctx.gpr[5], 0u);
+            if (ctx.gpr[6] != 0u && rt.memory().contains(ctx.gpr[6], 4u))
+                rt.memory().store32(ctx.gpr[6], 0u);
+            if (ctx.gpr[7] != 0u && rt.memory().contains(ctx.gpr[7], 4u))
+                rt.memory().store32(ctx.gpr[7], 0u);
+            ctx.set_gpr(2, 0u);
+        });
+    runtime.register_hle("sceAtrac3plus", 0x7DB31251u, // sceAtracAddStreamData
+        [](psprecomp::Runtime &, psprecomp::AllegrexContext &ctx) {
+            ctx.set_gpr(2, 0u);
+        });
+    runtime.register_hle("sceAtrac3plus", 0x83E85EA0u, // sceAtracGetSecondBufferInfo
+        [](psprecomp::Runtime &rt, psprecomp::AllegrexContext &ctx) {
+            if (ctx.gpr[5] != 0u && rt.memory().contains(ctx.gpr[5], 4u))
+                rt.memory().store32(ctx.gpr[5], 0u);
+            if (ctx.gpr[6] != 0u && rt.memory().contains(ctx.gpr[6], 4u))
+                rt.memory().store32(ctx.gpr[6], 0u);
+            ctx.set_gpr(2, 0u);
+        });
+    runtime.register_hle("sceAtrac3plus", 0x83BF7AFDu, // sceAtracSetSecondBuffer
+        [](psprecomp::Runtime &, psprecomp::AllegrexContext &ctx) {
+            ctx.set_gpr(2, 0u);
+        });
+    runtime.register_hle("sceAtrac3plus", 0x0E2A73ABu, // sceAtracSetData
+        [](psprecomp::Runtime &, psprecomp::AllegrexContext &ctx) {
+            ctx.set_gpr(2, 0u);
+        });
+    runtime.register_hle("sceAtrac3plus", 0x3F6E26B5u, // sceAtracSetHalfwayBuffer
+        [](psprecomp::Runtime &, psprecomp::AllegrexContext &ctx) {
+            ctx.set_gpr(2, 0u);
+        });
+    runtime.register_hle("sceAtrac3plus", 0x0FAE370Eu, // sceAtracSetHalfwayBufferAndGetID
+        [](psprecomp::Runtime &, psprecomp::AllegrexContext &ctx) {
+            ctx.set_gpr(2, 1u);
+        });
+    runtime.register_hle("sceAtrac3plus", 0xD1F59FDBu, // sceAtracStartEntry
+        [](psprecomp::Runtime &, psprecomp::AllegrexContext &ctx) {
+            ctx.set_gpr(2, 0u);
+        });
+    runtime.register_hle("sceAtrac3plus", 0xD5C28CC0u, // sceAtracEndEntry
+        [](psprecomp::Runtime &, psprecomp::AllegrexContext &ctx) {
             ctx.set_gpr(2, 0u);
         });
 
