@@ -508,6 +508,8 @@ bool run_isolated_aot(psprecomp::Runtime &runtime,
                       psprecomp::AllegrexContext &ctx, std::uint32_t entry,
                       std::uint32_t return_sentinel, int max_steps,
                       const char *tag);
+void field_scenario_model(psprecomp::Runtime &runtime,
+                          psprecomp::AllegrexContext &ctx);
 
 void scene_caller_hook(psprecomp::Runtime &runtime,
                        psprecomp::AllegrexContext &ctx,
@@ -1834,6 +1836,126 @@ bool run_isolated_aot(psprecomp::Runtime &runtime,
               << " at pc=" << psprecomp::hex32(ctx.pc) << "\n";
     dump_recent();
     return false;
+}
+
+// Restore the field-scene request that the charmake return path never issues.
+//
+// Normal field entry (around 0x0898E2FC) does, in order:
+//     manager = 0x08AC5428();                 // 0x08D9B920
+//     id = 0x0881460C(manager);               // returns manager+4 id if < 28
+//     if (id >= 0) 0x0895F32C(0x08AC538C());  // process queued scene requests
+//     0x088177C8(manager, 4, 0);              // reset manager+4 to 0xFFFF
+//     0x08A11FA4(field, 0);                   // scenario spawner
+//
+// 0x0881460C is the gate: it reads the u16 at manager+4 and returns -1 when the
+// value is 0xFFFF, so 0x0895F32C never runs. The charmake return path leaves
+// manager+4 at 0xFFFF because nothing issued a scene request after the reset.
+//
+// PROBE, not a fix. Publishing a valid id makes the gate pass, but the request
+// object 0x08DA0340 has request code 0 at +0x4C and no writer ever sets it, so
+// 0x0895F32C takes its out-of-range exit and still spawns nothing. The scenario
+// placement table at manager+4+0x2C2/+0x2C4 is also still empty, so 0x08A11FA4
+// has no records to walk. What is missing is the request/placement producer.
+//   PSPRECOMP_TOW2_SCENE_RESTORE=1            (enable)
+//   PSPRECOMP_TOW2_SCENE_RESTORE_ID=<0..27>   (default 0)
+//   PSPRECOMP_TOW2_LOAD_QDATA=1               (probe the qdata deserialiser)
+void field_scenario_model(psprecomp::Runtime &runtime,
+                          psprecomp::AllegrexContext &ctx) {
+    static bool attempted = false;
+    if (attempted) return;
+    auto &memory = runtime.memory();
+    constexpr std::uint32_t kManager = 0x08D9B920u;
+    constexpr std::uint32_t kField = 0x09FA02F0u;
+    constexpr std::uint32_t kSceneBlock = kManager + 4u;
+    if (!memory.contains(kManager + 4u, 2u)) return;
+    // The block reads 0 before the manager is constructed and only becomes the
+    // "no scene" marker once the manager exists. Never latch on a transient
+    // value, and only act after the field has loaded its prop entities.
+    if (memory.load16(kSceneBlock) != 0xFFFFu) return;
+    if (!memory.contains(kField + 8u, 4u)) return;
+    const std::uint32_t entityCount = memory.load32(kField + 8u);
+    if (entityCount == 0u || entityCount > 64u) return;
+    attempted = true;
+
+    std::uint32_t sceneId = 0u;
+    if (const char *text = std::getenv("PSPRECOMP_TOW2_SCENE_RESTORE_ID")) {
+        const unsigned long value = std::strtoul(text, nullptr, 0);
+        if (value < 28ul) sceneId = static_cast<std::uint32_t>(value);
+    }
+    const std::uint32_t fieldCountBefore = memory.load32(kField + 8u);
+    const std::uint8_t fieldMapId = memory.load8(kField + 0x84u);
+    const std::uint8_t managerFieldId = memory.load8(kManager + 0x3BD8u);
+
+    memory.store16(kSceneBlock, static_cast<std::uint16_t>(sceneId));
+
+    bool queueOk = false;
+    bool processOk = false;
+    std::uint32_t queue = 0u;
+    std::uint32_t processRet = 0u;
+    // Optional: run the real scenario load (0x088177C8 with an id below 4
+    // deserialises quest/qdata.bin into the scene block at manager+4 through
+    // 0x088181C0). It needs the quest subsystem, so it is a separate probe.
+    //   PSPRECOMP_TOW2_LOAD_QDATA=1
+    if (std::getenv("PSPRECOMP_TOW2_LOAD_QDATA") != nullptr) {
+        try {
+            psprecomp::AllegrexContext load_ctx = ctx;
+            load_ctx.set_gpr(4, kManager);
+            load_ctx.set_gpr(5, 0u);
+            load_ctx.set_gpr(6, 0u);
+            load_ctx.set_gpr(29, ctx.gpr[29] - 0x4000u);
+            const bool loadOk = run_isolated_aot(runtime, load_ctx, 0x088177C8u,
+                                                 kIsolatedReturnSentinel,
+                                                 4000000, "qdata-load");
+            std::cerr << "[tow2-qdata] ok=" << (loadOk ? 1 : 0)
+                      << " pc=" << psprecomp::hex32(load_ctx.pc)
+                      << " id=" << psprecomp::hex32(memory.load16(kSceneBlock))
+                      << " records="
+                      << static_cast<unsigned>(memory.load8(kSceneBlock + 0x2C2u))
+                      << "\n";
+        } catch (const std::exception &error) {
+            std::cerr << "[tow2-qdata] exception: " << error.what() << "\n";
+        } catch (...) {
+            std::cerr << "[tow2-qdata] exception: unknown\n";
+        }
+    }
+    try {
+        psprecomp::AllegrexContext queue_ctx = ctx;
+        queue_ctx.set_gpr(29, ctx.gpr[29] - 0x2000u);
+        queueOk = run_isolated_aot(runtime, queue_ctx, 0x08AC538Cu,
+                                   kIsolatedReturnSentinel, 20000,
+                                   "scene-queue");
+        queue = queue_ctx.gpr[2];
+        if (queue != 0u) {
+            psprecomp::AllegrexContext proc_ctx = ctx;
+            proc_ctx.set_gpr(4, queue);
+            proc_ctx.set_gpr(29, ctx.gpr[29] - 0x2000u);
+            processOk = run_isolated_aot(runtime, proc_ctx, 0x0895F32Cu,
+                                         kIsolatedReturnSentinel, 400000,
+                                         "scene-process");
+            processRet = proc_ctx.gpr[2];
+        }
+    } catch (const std::exception &error) {
+        std::cerr << "[tow2-scene-restore] exception: " << error.what() << "\n";
+    } catch (...) {
+        std::cerr << "[tow2-scene-restore] exception: unknown\n";
+    }
+
+    const std::uint16_t afterId =
+        memory.contains(kSceneBlock, 2u) ? memory.load16(kSceneBlock) : 0xFFFFu;
+    const std::uint32_t fieldCountAfter = memory.load32(kField + 8u);
+    const std::uint32_t entity0 =
+        memory.contains(kField + 4u, 4u) ? memory.load32(memory.load32(kField + 4u)) : 0u;
+    std::cerr << "[tow2-scene-restore] id=" << sceneId
+              << " field_map=" << static_cast<unsigned>(fieldMapId)
+              << " manager_field=" << static_cast<unsigned>(managerFieldId)
+              << " queue_ok=" << (queueOk ? 1 : 0)
+              << " queue=" << psprecomp::hex32(queue)
+              << " process_ok=" << (processOk ? 1 : 0)
+              << " ret=" << psprecomp::hex32(processRet)
+              << " id_after=" << psprecomp::hex32(afterId)
+              << " entities " << fieldCountBefore << "->" << fieldCountAfter
+              << " entity0=" << psprecomp::hex32(entity0)
+              << " t_us=" << g_scheduler.now_us << "\n";
 }
 
 void delete_thread(psprecomp::Runtime &runtime, psprecomp::AllegrexContext &ctx) {
@@ -6587,6 +6709,11 @@ void register_hle(psprecomp::Runtime &runtime, std::uint32_t user_arena_start) {
                         }
                     }
                 }
+            }
+            // Restore the field-scene request the charmake return path never
+            // issues, then let the game's own queue processor spawn actors.
+            if (std::getenv("PSPRECOMP_TOW2_SCENE_RESTORE") != nullptr) {
+                field_scenario_model(rt, ctx);
             }
             if (std::getenv("PSPRECOMP_TOW2_PRESENT_DIAG") != nullptr &&
                 (presents <= 3u || presents % 240u == 0u)) {

@@ -2584,3 +2584,132 @@ then either re-run the normal field-scene load (`0x08814AEC` / the loader call
 at `0x08A11C48`) or build the actor-spawn step by hand (create the 12-entry
 entity pool entry for the party member, attach the character data from
 `[character+1892] + index*56`, and hand it to `0x08A164F0`).
+
+## 27. Charma return never issues a scene request (2026-11-22)
+
+### The exact cause chain
+
+The field actor list is populated by the scenario spawner `0x08A11FA4`
+(`FUN_0020dfa4(field, descriptor)`), which walks a placement table at
+`descriptor+0x2C2` (byte count) / `descriptor+0x2C4` (records, stride `0x20`).
+
+`descriptor` is `0x08814460(manager)`, which is:
+
+```c
+int get_scene_block(int manager) {              // 0x08814460
+    int p = manager + 4;
+    if (*(short *)(manager + 4) == -1) p = 0;   // -1 == 0xFFFF
+    return p;
+}
+```
+
+Traced with `PSPRECOMP_TOW2_TRACE_PCS=0x08A11FA4,...`:
+
+```text
+[tow2-pc] pc=0x08A11FA4 uid=8 t_us=19727052 ra=0x0897A928
+          a0=0x09FA02F0 a1=0x00000000 a2=0x08C2B1B8
+```
+
+`a0` is the field object and **`a1` is 0** — the spawner runs once with a null
+descriptor, so it returns before the placement loop.
+
+`a1` is null because `*(u16*)(0x08D9B920 + 4) == 0xFFFF`. `PSPRECOMP_TOW2_WATCH32`
+shows only three writers of that word in a whole boot:
+
+```text
+frame=1  0x08D9B924 0xFFFFFFFF -> 0x00000000   (init)
+frame=2  0x08D9B924 0x00000000 -> 0x0000FFFF   (0x0881487C, manager reset)
+(cmake flow) 0x08AA33C0 zeroes the manager, then 0x0881487C sets 0xFFFF again
+```
+
+`0x08814848` (`FUN_00010848`) is the reset: it memsets `manager+4` for `0xE48`
+bytes, writes `0xFFFF` at `+4`, and calls the teardown `0x08814628`. Nothing
+revalidates the id afterwards.
+
+The block itself (`0x08D9B924`, `0xE48` bytes) is **entirely zero** at 20.5 s and
+still zero at 60 s, so even a valid id would give `records = 0`.
+
+### The gate that the missing request would open
+
+Normal field entry around `0x0898E2FC`:
+
+```asm
+0x0898E2F4  manager = 0x08AC5428()
+0x0898E2FC  id      = 0x0881460C(manager)          ; gate
+0x0898E304  if (id < 0) skip
+0x0898E30C  q       = 0x08AC538C()
+0x0898E314  0x0895F32C(q)                          ; request dispatch
+0x0898E31C  manager = 0x08AC5428()
+0x0898E32C  0x088177C8(manager, 4, 0)              ; reset to 0xFFFF
+0x0898E334  field   = 0x08AC5434()
+0x0898E340  0x08A11FA4(field, 0)
+```
+
+`0x0881460C` is four instructions:
+
+```asm
+lhu  v1, 4(a0)        ; scene id
+addiu v0, zero, -1
+sltiu a0, v1, 28
+movn v0, v1, a0       ; v0 = id when id < 28, else -1
+```
+
+So the request dispatch `0x0895F32C` only runs when the id is already valid, and
+the entry point itself clears the id immediately afterwards. The charmake return
+path enters at `0x0897A928` instead and never goes through this sequence.
+
+`0x0895F32C` switches on `[request+0x4C]` (`0x08DA0340+0x4C = 0x08DA038C`):
+
+```asm
+lw   v0, 0x4C(a0)
+addiu v0, v0, -4
+sltiu v1, v0, 24
+beql v1, zero, return
+...
+jr   v0               ; jump table at 0x00321B00
+```
+
+`PSPRECOMP_WATCH_WRITE=0x08DA036C` over a whole boot records **no writer** for
+that word: the request code is only ever the boot-time zero. So no request is
+ever issued, and the dispatch takes the out-of-range exit
+(`[tow2-scene-restore] ... process_ok=1 ret=0xFFFFFFFC`).
+
+### The scenario file and its deserialiser
+
+`0x088177C8(manager, id, flag)`:
+
+- `id < 4`: opens **`quest/qdata.bin`** (`0x0881231C`), reads it
+  (`0x08812A40`), then `0x088181C0(dest, src, size)` copies the serialised scene
+  block and `0x08813298` applies it.
+- `id >= 4`: clears `manager+4` to `0xFFFF`, zeroes `manager+0x3BD8`, and resets
+  the request object via `0x0895C510`.
+
+`0x088181C0` (`FUN_...`) deserialises with the record field at file `+0x2C2`
+(`lbu`), and `0x08818610` is the matching serialiser — it writes `0xFFFF` at
+`dest+0x2C2` and copies `src+0x2C2..0x2C7`.
+
+Calling `0x088177C8(manager, 0, 0)` from the host (either at the spawner
+dispatch or from the present hook) throws a null dereference
+(`Guest memory access outside PSP RAM/EDRAM at 0x00000000`) because the quest
+subsystem that `0x0881231C` needs was never brought up on this path.
+
+### What does not work
+
+- Publishing a valid scene id (`PSPRECOMP_TOW2_SCENE_RESTORE`) makes the gate
+  pass but spawns nothing: the request code is 0 and the placement table is
+  empty.
+- Calling the qdata deserialiser directly faults on uninitialised quest state.
+- The scenario spawner itself is fine — it is reached, it just receives null
+  and an empty table.
+
+### Where to go next
+
+The actor list must be produced by the same request/placement producer the quest
+system uses. Concretely: find the writer of `request+0x4C` (the code the jump
+table at `0x00321B00` indexes) and the writer of `manager+0x3BD8` plus the
+placement records at `manager+4+0x2C4`, then either drive that producer or port
+it. Grepping for the jump-table targets under `0x0895F3xx` names the request
+handlers; the handler for the "spawn party" code is the function to model.
+
+`PSPRECOMP_TOW2_SCENE_RESTORE` and `PSPRECOMP_TOW2_LOAD_QDATA` are probes, not
+fixes; both are off by default.
