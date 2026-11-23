@@ -1822,7 +1822,24 @@ bool run_isolated_aot(psprecomp::Runtime &runtime,
     for (int step = 0; step < max_steps; ++step) {
         if (ctx.pc == return_sentinel) return true;
         record(ctx.pc);
-        if (!runtime.invoke_isolated_aot(ctx.pc, ctx)) {
+        bool stepped = false;
+        try {
+            stepped = runtime.invoke_isolated_aot(ctx.pc, ctx);
+        } catch (const std::exception &error) {
+            std::cerr << "[tow2-iso] " << tag << " fault at pc="
+                      << psprecomp::hex32(ctx.pc)
+                      << " step=" << step
+                      << " a0=" << psprecomp::hex32(ctx.gpr[4])
+                      << " a1=" << psprecomp::hex32(ctx.gpr[5])
+                      << " a2=" << psprecomp::hex32(ctx.gpr[6])
+                      << " a3=" << psprecomp::hex32(ctx.gpr[7])
+                      << " sp=" << psprecomp::hex32(ctx.gpr[29])
+                      << " ra=" << psprecomp::hex32(ctx.gpr[31])
+                      << " : " << error.what() << "\n";
+            dump_recent();
+            throw;
+        }
+        if (!stepped) {
             std::cerr << "[tow2-iso] " << tag
                       << " unresolved pc=" << psprecomp::hex32(ctx.pc)
                       << " step=" << step
@@ -1919,8 +1936,7 @@ void field_scenario_model(psprecomp::Runtime &runtime,
         }
     }
     try {
-        psprecomp::AllegrexContext queue_ctx = ctx;
-        queue_ctx.set_gpr(29, ctx.gpr[29] - 0x2000u);
+        psprecomp::AllegrexContext queue_ctx = ctx;        queue_ctx.set_gpr(29, ctx.gpr[29] - 0x2000u);
         queueOk = run_isolated_aot(runtime, queue_ctx, 0x08AC538Cu,
                                    kIsolatedReturnSentinel, 20000,
                                    "scene-queue");
@@ -1938,6 +1954,46 @@ void field_scenario_model(psprecomp::Runtime &runtime,
         std::cerr << "[tow2-scene-restore] exception: " << error.what() << "\n";
     } catch (...) {
         std::cerr << "[tow2-scene-restore] exception: unknown\n";
+    }
+
+    // Model the real producer: 0x0898E370(field, arg) is the field-setup
+    // routine the charmake path never calls. It resolves the scene source for
+    // id 3 (0x088103C4), applies it, and loads quest/qdata.bin through
+    // 0x088177C8(manager, 3, arg).
+    //   PSPRECOMP_TOW2_FIELD_SETUP=1
+    //   PSPRECOMP_TOW2_FIELD_SETUP_ARG=<value passed as arg2> (default 0)
+    if (std::getenv("PSPRECOMP_TOW2_FIELD_SETUP") != nullptr) {
+        std::uint32_t arg = 0u;
+        if (const char *text = std::getenv("PSPRECOMP_TOW2_FIELD_SETUP_ARG"))
+            arg = static_cast<std::uint32_t>(std::strtoul(text, nullptr, 0));
+        try {
+            psprecomp::AllegrexContext setup_ctx = ctx;
+            setup_ctx.set_gpr(4, kField);
+            setup_ctx.set_gpr(5, arg);
+            setup_ctx.set_gpr(29, ctx.gpr[29] - 0x6000u);
+            const bool setupOk = run_isolated_aot(runtime, setup_ctx, 0x0898E370u,
+                                                 kIsolatedReturnSentinel,
+                                                 8000000, "field-setup");
+            std::cerr << "[tow2-field-setup] ok=" << (setupOk ? 1 : 0)
+                      << " arg=" << psprecomp::hex32(arg)
+                      << " pc=" << psprecomp::hex32(setup_ctx.pc)
+                      << " id=" << psprecomp::hex32(memory.load16(kSceneBlock))
+                      << " scenario="
+                      << static_cast<unsigned>(memory.load8(kManager + 0x3BD8u))
+                      << " records="
+                      << static_cast<unsigned>(memory.load8(kSceneBlock + 0x2C2u))
+                      << " field_scenario="
+                      << static_cast<unsigned>(memory.load8(kField + 0x17u))
+                      << " entities=" << memory.load32(kField + 8u)
+                      << "\n";
+        } catch (const std::exception &error) {
+            std::cerr << "[tow2-field-setup] exception: " << error.what()
+                      << " records="
+                      << static_cast<unsigned>(memory.load8(kSceneBlock + 0x2C2u))
+                      << " entities=" << memory.load32(kField + 8u) << "\n";
+        } catch (...) {
+            std::cerr << "[tow2-field-setup] exception: unknown\n";
+        }
     }
 
     const std::uint16_t afterId =

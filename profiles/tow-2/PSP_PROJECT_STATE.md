@@ -2713,3 +2713,152 @@ handlers; the handler for the "spawn party" code is the function to model.
 
 `PSPRECOMP_TOW2_SCENE_RESTORE` and `PSPRECOMP_TOW2_LOAD_QDATA` are probes, not
 fixes; both are off by default.
+
+## 28. Scenario producer identified; correction to §27 (2026-11-23)
+
+### Correction: `request+0x4C` is an event-flag channel, not the spawn gate
+
+§27 treated `0x0881460C` + `0x0895F32C` as the gate that would spawn actors. That
+is wrong. `0x0881460C(manager)` returns `manager+4` when the id is below 28, and
+the id sits at `manager+4`, but the dispatch it guards is an **event-flag**
+dispatcher:
+
+```asm
+0x0895F32C: lw   v0, 0x4C(a0)      ; request code
+            addiu v0, v0, -4
+            sltiu v1, v0, 24
+            ... jr v0              ; table at 0x08B25B00
+```
+
+The 24 targets in `0x08B25B00` collapse to ten handlers under `0x0895F3xx`, and
+every one of them ends in:
+
+```asm
+jal  0x08AC5320            ; -> 0x08DA0880
+a1 = <cue id>              ; 21, 26, 41, 27
+a2 = 1
+jal  0x0880B354            ; 0x0880B354 = bit set/clear
+```
+
+`0x0880B354(obj, id, value)` is a bitset write:
+
+```asm
+andi v0, a1, 7
+sra  a3, a1, 3
+sllv v1, 1, v0
+addu a3, a3, a0
+addu a3, a3, 0x40000
+lbu  v0, 0x4B94(a3)
+```
+
+so it sets bit `id` in the byte array at `obj + 0x44B94`. This channel drives
+script/event flags, and it is unrelated to populating the actor list.
+
+### The real producer
+
+Actor creation happens only in `0x08A11FA4(field, descriptor)`
+(`FUN_0020dfa4`), and it needs two things:
+
+1. a non-null `descriptor` (`0x08814460(manager)`, i.e. `manager+4` when its
+   `u16` is not `0xFFFF`), and
+2. a record count at `descriptor+0x2C2` with records at `descriptor+0x2C4`
+   (stride `0x20`).
+
+The routine that produces both is **`0x0898E370(fieldSetupObject, arg)`**:
+
+```asm
+0x0898E370  addiu sp,sp,-2784
+            s2 = a0 + 0x50
+            fp = a1                       ; arg2, forwarded to the loader
+0x0898E3D8  manager = 0x08AC5428()
+0x0898E3E8  v0 = 0x088103C4(manager, 3, fp)   ; scene source for id 3
+0x0898E3FC  0x0899C218(fieldSetup+0x34D0, v0, 1)
+...
+0x0898E5B8  0x088177C8(manager, 3, fp)         ; load quest/qdata.bin
+```
+
+and its consumer is **`0x08A12884`**, field vtable slot 11:
+
+```asm
+0x08A12890  manager = 0x08AC5428()
+0x08A12898  v0 = 0x0881440C? -> 0x08814B34(manager)   ; manager[0x3BD8]
+0x08A128A0  v1 = field[0x17]
+0x08A128A4  beq v0, v1, skip                          ; same id -> no respawn
+0x08A128B4  v0 = 0x08814460(manager)                  ; real descriptor
+0x08A128C0  0x08A11FA4(field, v0)                     ; spawn with records
+```
+
+`0x088177C8(manager, id, arg)` itself is two paths:
+
+- `id < 4`: build the scene block from `quest/qdata.bin`
+  (`0x0881231C("quest/qdata.bin")`, `0x08812A40` read, `0x088181C0`,
+  `0x08813298` apply).
+- `id >= 4`: clear `manager+4` to `0xFFFF`, zero `manager+0x3BD8`, reset the
+  event object.
+
+### Measured: none of it runs on the charmake path
+
+`PSPRECOMP_TOW2_TRACE_PCS` over a full charmake → field run to 25 s:
+
+```text
+pc=0x08A11FA4 uid=8 t_us=19727052 ra=0x0897A928 a0=0x09FA02F0 a1=0x00000000
+count = 1
+```
+
+`0x0898E370`, `0x088103C4`, `0x0898E5B8`, `0x088177C8` and `0x08A12884` are all
+**never entered**. `0x08A11FA4` is called exactly once, from `0x0897A78C`
+(which drains an actor-command queue, not a spawn queue), with `a1 = 0`.
+
+`0x08A12884` would also skip if it ran: `PSPRECOMP_TOW2_WATCH32` shows
+`manager[0x3BD8] == 0` and `field[0x17] == 0`, and it compares them.
+
+Both request channels are empty for the whole run:
+
+```text
+0x08DA038C (event code)      0 -> never changes
+0x08DA0750 (actor request)   0 -> 0x08DBEFE0 at frame 556
+0x08D9BBE4 (record count)    0 -> never changes
+```
+
+`0x08DBEFE0` holds a stable pointer/count bundle
+(`0x090C4E34, 0x090C4E00, 0x1D7, 0x97, 0x5B2, ...`) and `0x0895B7D4` feeds it
+to `0x08A0CAF4`, which is a *command* dispatcher (it calls `entity->vtable+0x70`
+on N 0x38-byte entries), not a spawner.
+
+### Modelling attempt and why it stops
+
+`PSPRECOMP_TOW2_FIELD_SETUP=1` calls `0x0898E370(0x09FA02F0, 0)` through
+`run_isolated_aot` (now with fault PC/register reporting). It gets seven
+dispatches in and faults:
+
+```text
+[tow2-iso] field-setup fault at pc=0x089E568C step=7
+           a0=0x09FA2C10 a1=0x00000029
+[tow2-iso] field-setup recent: 0x0898E370 0x08A5E50C 0x0898E3BC 0x08AC5490
+                               0x0898E3C4 0x08805350 0x0898E3CC 0x089E568C
+exception: Guest memory access outside PSP RAM/EDRAM at 0x7FC00048
+```
+
+`0x7FC00000` is a quiet NaN sitting in the arena at `0x09FA2A90` and
+`0x09FA2C10`; it is not a vtable. So `0x0898E370`'s first argument is **not**
+the field object: it addresses `a0+0x50`, `a0+0x27A0`, `a0+0x34D0`, i.e. a large
+scene-setup object that the charmake path never constructs.
+
+### Conclusion
+
+- `request+0x4C` writer: the event-flag producer for `0x08DA0880`; no writer on
+  this path, and it is not the actor gate.
+- Placement-table producer: `0x088177C8(manager, id<4, arg)` reading
+  `quest/qdata.bin`, driven by `0x0898E370(fieldSetupObject, arg)`.
+- Placement-table consumer: `0x08A12884` (field vtable `0x08C604C8` slot 11),
+  gated on `manager[0x3BD8] != field[0x17]`.
+- Neither producer nor consumer runs after charmake, because the scene-setup
+  object they hang off is missing.
+
+Next: find where the scene-setup object (`a0` of `0x0898E370`) is allocated and
+initialised. It is the one object this path must create; once it exists,
+`0x0898E370` should load qdata and the table, and `0x08A12884` should spawn.
+
+Probes are off by default: `PSPRECOMP_TOW2_SCENE_RESTORE`,
+`PSPRECOMP_TOW2_LOAD_QDATA`, `PSPRECOMP_TOW2_FIELD_SETUP` (plus
+`..._FIELD_SETUP_ARG`).
