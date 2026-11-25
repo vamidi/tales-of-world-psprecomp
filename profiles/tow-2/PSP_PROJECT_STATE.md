@@ -2862,3 +2862,147 @@ initialised. It is the one object this path must create; once it exists,
 Probes are off by default: `PSPRECOMP_TOW2_SCENE_RESTORE`,
 `PSPRECOMP_TOW2_LOAD_QDATA`, `PSPRECOMP_TOW2_FIELD_SETUP` (plus
 `..._FIELD_SETUP_ARG`).
+
+## 29. Writer trace complete; the field's actors come from a static table (2026-11-25)
+
+`PSPRECOMP_WATCH_WRITE` now takes a comma-separated address list (with optional
+per-entry size, `0xADDR:SIZE`), so one run can watch several words.
+
+### request+0x4C (`0x08DA038C`)
+
+The accessors are adjacent in the event cluster:
+
+```asm
+0x0895F278  jr ra ; lw v0,0x4C(a0)     ; get code
+0x0895F288  jr ra ; sw a1,0x4C(a0)     ; set code   <-- the writer
+0x0895F290  jr ra ; sw a1,0x50(a0)     ; set the second slot
+0x0895F298            ...              ; append at +0x3F8, entries 12 bytes
+                                              (+0x98 u16, +0x9C ptr, +0xA0 ptr)
+```
+
+Observed writers over a full boot:
+
+```text
+uid=1 pc=0x0895E420 store32 0x08DA038C 0 -> 0     (x2)
+uid=1 pc=0x0895F288 store32 0x08DA038C 0 -> 0
+uid=8 pc=0x0895E420 store32 0x08DA038C 0 -> 0     (x2)
+uid=8 pc=0x0895F288 store32 0x08DA038C 0 -> 0     (x5)
+```
+
+Every write is zero. The producer would call `0x0895F288(request, code)` with a
+code in 4..27; that never happens.
+
+### Placement table (`manager+4+0x2C2/0x2C4` = `0x08D9BBE6`/`0x08D9BBE8`)
+
+Observed writers:
+
+```text
+uid=1 pc=0x08817AD0 store8  0x08D9BBE8 0 -> 0
+uid=1 pc=0x08817AD0 store8  0x08D9BBE9 0 -> 0
+uid=1 pc=0x08AA33C0 store32 0x08D9BBE4 0 -> 0
+uid=1 pc=0x08AA33C0 store32 0x08D9BBE8 0 -> 0
+uid=8 pc=0x08AA33C0 store32 0x08D9BBE4 0 -> 0     (x3)
+uid=8 pc=0x08AA33C0 store32 0x08D9BBE8 0 -> 0     (x3)
+```
+
+Only clears. `0x08AA33C0` is the quest-manager memset; `0x08817AD0` is the
+scene-block initialiser. Nothing ever writes a record. The populator is
+`0x088177C8(manager, id<4, arg)` → `0x088181C0` + `0x08813298` from
+`quest/qdata.bin`, and it is never entered.
+
+### The actor list that *is* built
+
+Watching the field entity words found the real chain:
+
+```text
+uid=8 pc=0x08A0F9A0 store32 0x09FA02F4 0 -> 0x08F37000
+uid=8 pc=0x08A0F9A0 store32 0x09FA02F8 0 -> 0x0000000C
+```
+
+`0x08A0F9A0` is the tail of `0x08A0F8F8(field, count, array)`:
+
+```c
+void set_actor_list(field, count, array) {   // 0x08A0F8F8
+    if (field[8] != 0) { for each old entry: entry->vtable[1](entry); free(field[4]); }
+    field[4] = array;
+    field[8] = count;
+}
+```
+
+Captured caller (`PSPRECOMP_TOW2_TRACE_PCS=0x08A0F8F8`):
+
+```text
+pc=0x08A0F8F8 ra=0x0897E3FC a0=0x09FA02F0 a1=0x0000000C a2=0x08F37000
+```
+
+so the install call is `0x0897E3F4: jal 0x08A0F8F8` inside `sub_0897E16C`, with
+`a1 = lbu s4+0x38` and `a2 = malloc(count*4)`.
+
+`sub_0897E16C` itself is called from `0x08980A5C`:
+
+```text
+pc=0x0897E16C ra=0x08980A5C a0=0x09FA02F0 a1=0x08C99738 a2=0x09FA3B44
+```
+
+- `a0` = the field object.
+- `a1 = 0x08C99738` = a **static definition table** in the image (segment 1).
+  Its rows hold resource-name pointers (`0x00427048`, `0x00427050`, ...) plus an
+  id (`0x00027968`) and flags (`0xFFFFFFFF`, `0x00000022`, `0x00327AAC`).
+- `a2 = 0x09FA3B44` = the per-field scene table; the actor count is read from
+  `a2+0x38`/`+0x3C`.
+
+Each actor is created in the loop at `0x0897E640`:
+
+```asm
+0x0897E648  jal 0x00272974      ; malloc(0x340)
+0x0897E660  jal 0x0017FCDC      ; initialise that 0x340-byte entity
+0x0897E668  sw  s0,0(s1)        ; array[i] = entity
+0x0897E66C  lbu a1,56(s4)       ; count
+0x0897E674  bne ... loop
+```
+
+then each is configured by `0x0896F3B4(typeByte, ..., field)` and a bit mask is
+ORed into `s5` (`0x0897E684`..`0x0897E6C8`).
+
+### Conclusion
+
+The field's twelve actors are **map props built from a static, per-map
+definition table** (`0x08C99738`) through `0x0897E16C` — not from the quest
+placement table. The party actor is not among them, and the quest placement
+producer is never reached, so both `request+0x4C` and the placement table stay
+empty and the party never spawns.
+
+Model target is now unambiguous: append a thirteenth entry to the
+`0x09FA3B44` scene table (count at `+0x38`/`+0x3C`, 20-byte definition stride at
+`+0x42`) and let `0x0897E16C` build it, or call the per-entity path directly
+(`malloc(0x340)` + `0x0897FCDC` + `0x0896F3B4`). The per-actor definition bytes
+still need mapping before that produces a usable character rather than an inert
+832-byte object.
+
+### Producer model: partial success
+
+`PSPRECOMP_TOW2_ACTOR_APPEND=1` bumps the scene-table count at `+0x38`
+(observed as 12, confirming the read location) and calls the producer with the
+captured arguments `(0x09FA02F0, 0x08C99738, 0x09FA3B44, 0, 0, 0, 0)`:
+
+```text
+[tow2-actor-append] count=12 table+38=12 table+3C=0 offset=56
+[tow2-actor-append] ok=1 pc=0xDEADBEEF entities=12 array=0x08F3F100 table_count=12
+```
+
+The producer **runs to completion** (`pc` reached the return sentinel) and
+rebuilds the actor list — `field+4` changes from `0x08F37000` to `0x08F3F100`
+(a fresh `malloc`). But the count comes back as 12, not 13, so the extra slot is
+dropped: `0x0897E16C` re-derives the count rather than trusting the table byte,
+most likely from the definition table passed in `a1` (`0x08C99738`) or from
+`field+8`.
+
+To add an actor the definition list itself must have a thirteenth row: copy
+`0x08C99738` into RAM, extend it, and pass the copy as `a1`, or set the count
+after the producer's own initialisation of `+0x38`. `a3 = 0` (measured) and
+`t0..t2` are the remaining argument unknowns.
+
+### Tooling
+
+`PSPRECOMP_WATCH_WRITE` now accepts a comma-separated list with optional sizes
+(`"0x08DA038C:4,0x09FA02F4:8"`), and `PSPRECOMP_TOW2_TRACE_PCS` now logs `a3`.

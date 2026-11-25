@@ -17,28 +17,52 @@ const char *runtime_thread_name() noexcept;
 std::uint32_t runtime_dispatch_pc() noexcept;
 
 namespace {
-struct WriteWatch {
-    bool enabled{};
+struct WriteWatchEntry {
     std::uint32_t address{};
     std::uint32_t size{4u};
 };
 
+struct WriteWatch {
+    bool enabled{};
+    std::vector<WriteWatchEntry> entries;
+};
+
+// PSPRECOMP_WATCH_WRITE accepts a comma-separated address list so one run can
+// observe several guest words. PSPRECOMP_WATCH_WRITE_SIZE applies to every
+// entry. A comma-separated form like "0xA:4,0xB:2" is also accepted.
 const WriteWatch &write_watch() {
     static const WriteWatch watch = [] {
         WriteWatch result{};
         const char *text = std::getenv("PSPRECOMP_WATCH_WRITE");
         if (text == nullptr || *text == '\0') return result;
-        char *end = nullptr;
-        const unsigned long address = std::strtoul(text, &end, 0);
-        if (end == text || *end != '\0' || address > 0xFFFFFFFFul) return result;
-        result.enabled = true;
-        result.address = static_cast<std::uint32_t>(address);
+        std::uint32_t default_size = 4u;
         if (const char *size_text = std::getenv("PSPRECOMP_WATCH_WRITE_SIZE")) {
             char *size_end = nullptr;
             const unsigned long size = std::strtoul(size_text, &size_end, 0);
             if (size_end != size_text && *size_end == '\0' && size != 0ul && size <= 0xFFFFFFFFul)
-                result.size = static_cast<std::uint32_t>(size);
+                default_size = static_cast<std::uint32_t>(size);
         }
+        const char *cursor = text;
+        while (*cursor != '\0') {
+            while (*cursor == ',' || *cursor == ' ' || *cursor == '\n')
+                ++cursor;
+            if (*cursor == '\0') break;
+            char *end = nullptr;
+            const unsigned long address = std::strtoul(cursor, &end, 0);
+            if (end == cursor || address > 0xFFFFFFFFul) break;
+            cursor = end;
+            WriteWatchEntry entry{static_cast<std::uint32_t>(address), default_size};
+            if (*cursor == ':') {
+                char *size_end = nullptr;
+                const unsigned long size = std::strtoul(cursor + 1, &size_end, 0);
+                if (size_end != cursor + 1 && size != 0ul && size <= 0xFFFFFFFFul) {
+                    entry.size = static_cast<std::uint32_t>(size);
+                    cursor = size_end;
+                }
+            }
+            result.entries.push_back(entry);
+        }
+        result.enabled = !result.entries.empty();
         return result;
     }();
     return watch;
@@ -48,11 +72,15 @@ bool overlaps_watch(std::uint32_t address, std::size_t length) {
     const WriteWatch &watch = write_watch();
     if (!watch.enabled || length == 0u) return false;
     const std::uint32_t canonical_address = address & 0x1FFFFFFFu;
-    const std::uint32_t canonical_watch = watch.address & 0x1FFFFFFFu;
     const std::uint64_t first_end = static_cast<std::uint64_t>(canonical_address) + length;
-    const std::uint64_t watch_end = static_cast<std::uint64_t>(canonical_watch) + watch.size;
-    return static_cast<std::uint64_t>(canonical_address) < watch_end &&
-           static_cast<std::uint64_t>(canonical_watch) < first_end;
+    for (const WriteWatchEntry &entry : watch.entries) {
+        const std::uint32_t canonical_watch = entry.address & 0x1FFFFFFFu;
+        const std::uint64_t watch_end = static_cast<std::uint64_t>(canonical_watch) + entry.size;
+        if (static_cast<std::uint64_t>(canonical_address) < watch_end &&
+            static_cast<std::uint64_t>(canonical_watch) < first_end)
+            return true;
+    }
+    return false;
 }
 
 void log_write_watch(std::uint32_t address, std::size_t length, const char *operation,

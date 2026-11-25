@@ -510,7 +510,8 @@ bool run_isolated_aot(psprecomp::Runtime &runtime,
                       const char *tag);
 void field_scenario_model(psprecomp::Runtime &runtime,
                           psprecomp::AllegrexContext &ctx);
-
+void field_actor_append_model(psprecomp::Runtime &runtime,
+                              psprecomp::AllegrexContext &ctx);
 void scene_caller_hook(psprecomp::Runtime &runtime,
                        psprecomp::AllegrexContext &ctx,
                        std::uint32_t dispatch_pc,
@@ -552,6 +553,7 @@ void scene_caller_hook(psprecomp::Runtime &runtime,
                           << " a0=" << psprecomp::hex32(ctx.gpr[4])
                           << " a1=" << psprecomp::hex32(ctx.gpr[5])
                           << " a2=" << psprecomp::hex32(ctx.gpr[6])
+                          << " a3=" << psprecomp::hex32(ctx.gpr[7])
                           << " pad=" << psprecomp::hex32(pad) << "\n";
             }
             break;
@@ -2012,6 +2014,70 @@ void field_scenario_model(psprecomp::Runtime &runtime,
               << " entities " << fieldCountBefore << "->" << fieldCountAfter
               << " entity0=" << psprecomp::hex32(entity0)
               << " t_us=" << g_scheduler.now_us << "\n";
+}
+
+// Model the field's own actor-list producer with one extra slot.
+//
+// The list that actually gets built is created by 0x0897E16C, captured as
+//     0x0897E16C(field=0x09FA02F0, a1=0x08C99738, a2=0x09FA3B44, a3=0)
+// from 0x08980A5C. It reads the actor count as a byte from the scene table and
+// mallocs one 0x340-byte entity per slot (0x0897E648), initialising each with
+// 0x0897FCDC. Bumping that count by one and re-running the producer is the
+// narrowest way to ask the game itself for a thirteenth actor.
+//   PSPRECOMP_TOW2_ACTOR_APPEND=1
+void field_actor_append_model(psprecomp::Runtime &runtime,
+                              psprecomp::AllegrexContext &ctx) {
+    static bool done = false;
+    if (done) return;
+    auto &memory = runtime.memory();
+    constexpr std::uint32_t kField = 0x09FA02F0u;
+    constexpr std::uint32_t kSceneTable = 0x09FA3B44u;
+    constexpr std::uint32_t kDefinitions = 0x08C99738u;
+    if (!memory.contains(kField + 8u, 4u)) return;
+    const std::uint32_t count = memory.load32(kField + 8u);
+    if (count != 12u) return;   // wait for the normal setup to finish
+    if (!memory.contains(kSceneTable + 0x40u, 4u)) return;
+    done = true;
+
+    const std::uint8_t at38 = memory.load8(kSceneTable + 0x38u);
+    const std::uint8_t at3c = memory.load8(kSceneTable + 0x3Cu);
+    std::uint32_t countOffset = 0u;
+    if (at38 == 12u) countOffset = 0x38u;
+    else if (at3c == 12u) countOffset = 0x3Cu;
+    std::cerr << "[tow2-actor-append] count=" << count
+              << " table+38=" << static_cast<unsigned>(at38)
+              << " table+3C=" << static_cast<unsigned>(at3c)
+              << " offset=" << countOffset << "\n";
+    if (countOffset == 0u) return;
+    memory.store8(kSceneTable + countOffset,
+                  static_cast<std::uint8_t>(count + 1u));
+
+    try {
+        psprecomp::AllegrexContext call = ctx;
+        call.set_gpr(4, kField);
+        call.set_gpr(5, kDefinitions);
+        call.set_gpr(6, kSceneTable);
+        call.set_gpr(7, 0u);
+        call.set_gpr(8, 0u);
+        call.set_gpr(9, 0u);
+        call.set_gpr(10, 0u);
+        call.set_gpr(29, ctx.gpr[29] - 0x4000u);
+        const bool ok = run_isolated_aot(runtime, call, 0x0897E16Cu,
+                                        kIsolatedReturnSentinel, 4000000,
+                                        "actor-append");
+        std::cerr << "[tow2-actor-append] ok=" << (ok ? 1 : 0)
+                  << " pc=" << psprecomp::hex32(call.pc)
+                  << " entities=" << memory.load32(kField + 8u)
+                  << " array=" << psprecomp::hex32(memory.load32(kField + 4u))
+                  << " table_count="
+                  << static_cast<unsigned>(memory.load8(kSceneTable + countOffset))
+                  << "\n";
+    } catch (const std::exception &error) {
+        std::cerr << "[tow2-actor-append] exception: " << error.what()
+                  << " entities=" << memory.load32(kField + 8u) << "\n";
+    } catch (...) {
+        std::cerr << "[tow2-actor-append] exception: unknown\n";
+    }
 }
 
 void delete_thread(psprecomp::Runtime &runtime, psprecomp::AllegrexContext &ctx) {
@@ -6770,6 +6836,10 @@ void register_hle(psprecomp::Runtime &runtime, std::uint32_t user_arena_start) {
             // issues, then let the game's own queue processor spawn actors.
             if (std::getenv("PSPRECOMP_TOW2_SCENE_RESTORE") != nullptr) {
                 field_scenario_model(rt, ctx);
+            }
+            // Model the field's own actor-list producer with one extra slot.
+            if (std::getenv("PSPRECOMP_TOW2_ACTOR_APPEND") != nullptr) {
+                field_actor_append_model(rt, ctx);
             }
             if (std::getenv("PSPRECOMP_TOW2_PRESENT_DIAG") != nullptr &&
                 (presents <= 3u || presents % 240u == 0u)) {
