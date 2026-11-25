@@ -655,8 +655,17 @@ Final transition run (`town_transition.ppm.50500`-`53000`) captured the
 false-triggered on the Thomas plaza dialogue at present 31099+ and changed the
 route back into the shop. The earlier `shop_stairs.ppm.51500` town menu was a
 one-off state; the detector must be limited to the actual town-menu signature
-or disabled for the route. The remaining efficient path is a PPSSPP town save
-or a faster native capture with a route-specific detector.
+or disabled for the route.
+
+A clean run with auto-Guild disabled and one Circle at 51600
+(`town_menu_once.ppm.51000`-`54000`) shows the same result:
+
+- 51000-51500: Weapon Shop Buy/Sell menu.
+- 51750-54000: shop interior after Circle closes that menu.
+- No town-menu frame and no Guild quest list.
+
+The reliable next source is a PPSSPP Ailily save state; the native shop route
+is not reaching the town menu deterministically.
 
 The native exploration runs are headless (`PSPRECOMP_TOW1_NO_WINDOW=1`):
 there is intentionally no visible `Tow1Native` window, and each captured PPM
