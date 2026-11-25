@@ -2052,10 +2052,46 @@ void field_actor_append_model(psprecomp::Runtime &runtime,
     memory.store8(kSceneTable + countOffset,
                   static_cast<std::uint8_t>(count + 1u));
 
+    // Optionally hand the producer a RAM copy of the map-definition table with
+    // one extra row, instead of the read-only image table.
+    //   PSPRECOMP_TOW2_ACTOR_TABLE_COPY=1
+    std::uint32_t definitions = kDefinitions;
+    if (std::getenv("PSPRECOMP_TOW2_ACTOR_TABLE_COPY") != nullptr) {
+        constexpr std::uint32_t kRows = 12u;
+        constexpr std::uint32_t kStride = 0x30u;
+        constexpr std::uint32_t kBytes = kRows * kStride;
+        try {
+            psprecomp::AllegrexContext alloc = ctx;
+            alloc.set_gpr(4, kBytes + kStride);
+            alloc.set_gpr(29, ctx.gpr[29] - 0x2000u);
+            if (run_isolated_aot(runtime, alloc, 0x08A76974u,
+                                 kIsolatedReturnSentinel, 40000,
+                                 "table-alloc")) {
+                const std::uint32_t copy = alloc.gpr[2];
+                if (copy != 0u && memory.contains(copy, kBytes + kStride) &&
+                    memory.contains(kDefinitions, kBytes)) {
+                    for (std::uint32_t offset = 0u; offset < kBytes; offset += 4u)
+                        memory.store32(copy + offset,
+                                       memory.load32(kDefinitions + offset));
+                    for (std::uint32_t offset = 0u; offset < kStride; offset += 4u)
+                        memory.store32(copy + kBytes + offset,
+                                       memory.load32(kDefinitions + offset));
+                    definitions = copy;
+                    std::cerr << "[tow2-actor-append] table copy="
+                              << psprecomp::hex32(copy) << " rows=" << kRows + 1u
+                              << " stride=" << psprecomp::hex32(kStride) << "\n";
+                }
+            }
+        } catch (const std::exception &error) {
+            std::cerr << "[tow2-actor-append] table copy failed: "
+                      << error.what() << "\n";
+        }
+    }
+
     try {
         psprecomp::AllegrexContext call = ctx;
         call.set_gpr(4, kField);
-        call.set_gpr(5, kDefinitions);
+        call.set_gpr(5, definitions);
         call.set_gpr(6, kSceneTable);
         call.set_gpr(7, 0u);
         call.set_gpr(8, 0u);

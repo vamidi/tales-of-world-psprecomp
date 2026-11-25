@@ -3006,3 +3006,41 @@ after the producer's own initialisation of `+0x38`. `a3 = 0` (measured) and
 
 `PSPRECOMP_WATCH_WRITE` now accepts a comma-separated list with optional sizes
 (`"0x08DA038C:4,0x09FA02F4:8"`), and `PSPRECOMP_TOW2_TRACE_PCS` now logs `a3`.
+
+### Map-definition table copy: negative result
+
+`PSPRECOMP_TOW2_ACTOR_TABLE_COPY=1` copies the definition table to guest RAM
+(malloc via `0x08A76974`) and appends a thirteenth `0x30`-byte row:
+
+```text
+[tow2-actor-append] count=12 table+38=12 table+3C=0 offset=56
+[tow2-actor-append] table copy=0x08DBF470 rows=13 stride=0x00000030
+[tow2-actor-append] ok=1 pc=0xDEADBEEF entities=12 array=0x08F3F100 table_count=12
+```
+
+The producer still completes and rebuilds the list (`field+4` →
+`0x08F3F100`), but the actor count stays 12. So `a1` does **not** drive the
+count. Confirmed statically: inside `sub_0897E16C` the saved `a1` (`sp+0x1C`) is
+first reloaded only at `0x0897E42C`, `0x0897E470`, `0x0897E480`, `0x0897E5D8`
+and `0x0897E5E8` — all **after** the actor creation loop at `0x0897E640`. The
+definition table is consumed for resource loading, not for actor enumeration.
+
+The count really is the byte at `field+0x3854+0x38`
+(`0x09FA3B7C`, word `0x0000010C` = count 12 plus a flag byte). Writing 13 there
+is discarded by the producer run itself:
+
+```text
+store8  0x09FA3B7C 0x0c -> 0x0d      (the bump)
+store32 0x09FA3B7C 0x10d -> 0x0      (producer re-initialises the word)
+store32 0x09FA3B7C 0x0   -> 0x10c    (and restores 12)
+```
+
+That word is first populated during field setup (a `store32` of `0x10C`), so the
+map's actor record count — not the definition table — is the value to change.
+
+### Corrected next step
+
+Find where `field+0x3854+0x38` (the scene-table word `0x10C`) is first written
+during field setup and what supplies the 12. That writer is the map actor
+producer; extending it (or the map record it reads) is what adds a thirteenth
+actor. Appending rows to `0x08C99738` cannot do it.
